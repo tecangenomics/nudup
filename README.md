@@ -10,10 +10,11 @@ Software used
 Usage
 -----------------------------
 Run `python nudup.py -h` for latest usage.
-
+```
 usage: nudup.py &#91;-2&#93; &#91;-f INDEX.fq|READ.fq&#93; &#91;-o OUT&#95;PREFIX&#93; &#91;-s START&#93;
                 &#91;-l LENGTH&#93; &#91;-v&#93; &#91;-h&#93;
                 IN.sam|IN.bam
+```
 
 Marks/removes PCR duplicates using the N6 sequence technology used in
 NuGEN's Ovation Target Enrichment libraries.
@@ -38,6 +39,7 @@ inputs. Here are the two cases for running this tool:
   name in the FASTQ file.
 
 Author: Anand Patel
+
 Contact: NuGEN Technologies Inc., techserv@nugen.com
 
 Input:
