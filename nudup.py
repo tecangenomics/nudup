@@ -40,7 +40,22 @@ import time
 __author__ = 'Anand Patel'
 __company__ = "NuGEN Technologies Inc."
 __email__ = "techserv@nugen.com"
-__version__ = '2.1'
+__version__ = '2.2'
+__copyright__ = """Copyright (C) 2015 NuGEN Technologies Inc.
+   
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License 
+    along with this program. If not, see <http://www.gnu.org/licenses/>."""
+
 
 IUPAC = 'ATCGRYMKSWHBVDN'
 ALLOWED_FASTQ = ['.fq','.fastq.gz']
@@ -325,14 +340,20 @@ class MarkRmDups(object):
 		self.dup_count = None
 			
 		self._umi = None
+		self._Writer = Writer
+		self._writer = None
 
 		if os.sep in self._out_prefix and not os.path.isdir(os.path.dirname(self._out_prefix)):
 			raise IOError('directory path not found %s'%self._out_prefix)
+	def set_writer(self):
+		""" Sets the writer after allowing modifications to output paths """
+		if not self._writer is None:
+			return
 
-		if Writer is None:
+		if self._Writer is None:
 			self._writer = DefaultWriter(self, self.get_markdup_path(), self.get_rmdup_path())
 		else:
-			self._writer = Writer(self, self.get_markdup_path(), self.get_rmdup_path())
+			self._writer = self._Writer(self, self.get_markdup_path(), self.get_rmdup_path())
 
 
 	def set_umi_length(self, length=6, validator=False):
@@ -437,7 +458,7 @@ class MarkRmDups(object):
 
 	def mark_from_sorted_sam_with_umi_in_header(self, sorted_sam_fh):
 		""" Marks UMI duplicates in one bam, and Removes UMI duplicates in another bam """
-
+		self.set_writer()
 		self.umi_dup_count = 0
 		self.dup_count = 0
 		
@@ -479,7 +500,7 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 
 	def __init__(self, out_prefix, Writer=None):
 		MarkRmDups.__init__(self, out_prefix, Writer=Writer)
-
+		
 	def _iter_grp_and_post(self, grp, pgrp):
 		if len(grp) > 0:
 			yield grp
@@ -492,7 +513,8 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 		""" Generator that yields on groups of forward sam rows, where contig and pos are identical 
 		  Forward reads that are properly aligned (SAM Flag 0x2 unset) with the same starting position
 		  will be returned as a group. Additional criteria, Forward reads must be first in template 
-		  (SAM Flag 0x40 set) and not reverse complemented (SAM Flag 0x10 unset)
+		  (SAM Flag 0x40 set) and not reverse complemented (SAM Flag 0x10 unset). Aligned_count counts only forward
+		  reads with concordant f/r paired mappings. 
 		"""
 		contig = None
 		pos = None
@@ -514,7 +536,8 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 				n_contig = row[2]
 				n_pos = int(row[3])
 				n_flag = int(row[1])
-				n_tlen = int(row[8])
+				n_contig_next = row[6]
+				n_pos_next = int(row[7])
 			except KeyError:
 				raise KeyError('Not a valid SAM entry: {0}.'.format(line))
 			#logger.debug('Parsing... %s, %d, %s', n_contig, n_pos, row)
@@ -529,7 +552,7 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 				pos = None
 				yield [row,]
 				self.unaligned_count += 1
-			elif n_flag & 0x1 == 0 or n_flag & 0x2 == 0 or n_flag & 0x10 > 0 or n_tlen<=0:
+			elif n_flag & 0x1 == 0 or n_flag & 0x2 == 0 or n_flag & 0x10 > 0 or n_contig_next!='=' or n_pos_next<n_pos:
 				# Do not group the following cases:
 				#  - template does not have multiple segments in sequence
 				#  - Unproperly aligned according to aligner
@@ -540,11 +563,11 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 					interleaved_with_grp.append(row)
 				else:
 					yield [row,]
-			elif n_flag & 0x10 == 0 and n_flag & 0x20 == 0x20 and n_tlen>0 and  pos==n_pos and contig==n_contig:
-				# consider only Forward/reverse mapping reads, with this being the first read.
+			elif n_flag & 0x10 == 0 and n_flag & 0x20 == 0x20 and  pos==n_pos and contig==n_contig:
+				# consider only Forward/reverse mapping reads, with this being the first forward read.
 				self.aligned_count += 1
 				grp.append(row)
-			elif n_flag & 0x10 == 0 and n_flag & 0x20 == 0x20 and n_tlen>0 and  pos<n_pos or contig!=n_contig or contig is None:
+			elif n_flag & 0x10 == 0 and n_flag & 0x20 == 0x20 and pos<n_pos or contig!=n_contig or contig is None:
 				# handles initial call, if contigs and positions are different 
 				for pgrp in self._iter_grp_and_post(grp,interleaved_with_grp):
 						yield pgrp
@@ -576,7 +599,7 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 			Since paired end, the last segment in template read must be marked or removed depending on
 			the grouping of the first properly mapped read.
 		"""
-
+		self.set_writer()
 		self.umi_dup_count = 0
 		self.dup_count = 0
 	
@@ -618,7 +641,6 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 			logger.error('There are %d reverse end reads, that were not caught and set properly.', len(is_reverse_read_a_dup))
 		for k,v in is_reverse_read_a_dup.iteritems():
 			logger.error('QNAME: %s IsDup: %d', k,v)
-
 		self._writer.close()
 	
 class IndexFinder(object):
