@@ -1,64 +1,167 @@
-#!/bin/python
-"""Marks/removes duplicates using NuGEN's Unique Molecular Barcode
-technology.
+#!/usr/bin/env python
+"""Marks/removes PCR duplicates using the N6 sequence technology used in
+NuGEN's Ovation Target Enrichment libraries.
 
-It removes reads as duplicates if they fulfill the following criteria: a) start
-in the same location b) same orientation c) have the same unique molecular barcode. The read 
-with the highest mapping quality is not considered a duplicate.  For paired end reads, 
-the criteria for a duplicate is: a) start in the same location b) same template length 
-c) have the same unique molecular barcode.
+For single end reads, duplicates are marked if they fulfill the following
+criteria: a) start in the same location b) have the same orientation/strand 
+c) have the same N6 sequence. The read with the highest mapping quality is kept 
+as the non-duplicate read. For paired end reads, duplicates are marked if they
+fulfill the following criteria: a) start in the same location b) have the same
+template length c) have the same N6 sequence. The read pair with the highest
+mapping quality is kept as the non-duplicate read.
 
 The runtime for marking and removal of duplicates depends on the format of the
-inputs. Here are the three cases for running this script.
-	Case 1 (fastest runtime): Pre-built SAM/BAM
-		input_sam -- sorted SAM/BAM with fixed length UMI-sequence appended to the read name
-		umi_length -- length of UMI sequence (defaults to 6)
-	Case 2 (almost as fast as case 1): Pairwise matched SAM/BAM and Index fastq
-	  SAM/BAM records do not have a UMI, but are in a one-to-one ordered
-	  match to sequence records in index fastq. The UMI is a substring of an index
-	  sequence record.
-		input_sam -- SAM/BAM
-		index_fastq -- Fastq file containing sequences 
-		start -- starting position (1-based) of UMI in each sequence record in the index fastq (defaults to 6)
-		umi_length -- length of UMI sequence (defaults to 6)
-	Case 3 (slowest): Unmatched SAM/BAM and Index fastq
-	  SAM/BAM records do not have a UMI, and are not a particular order
-	  compared to index fastq.  Index fastq read names must be unique, and each
-	  SAM/BAM record must have corresponding read name in the fastq file.
-		input_sam -- SAM/BAM
-		index_fastq -- Fastq file containing sequences 
-		start -- starting position (1-based) of UMI in each sequence record in the index fastq (defaults to 6)
-		umi_length -- length of UMI sequence (defaults to 6)
+inputs. Here are the two cases for running this tool:
 
-Note: Script autodetects between Case 2 and Case 3.
+- Case 1 (faster runtime): User supplies pre-built SAM/BAM alignment file that
+  is sorted and has fixed length N6 sequence appended to the read name
+- Case 2 (slower runtime): User supplies SAM/BAM alignment file and FASTQ file
+  containing N6 sequence. SAM/BAM records do not have a N6 sequence, but the N6
+  sequence is a substring in the read or title of the FASTQ file. FASTQ read
+  names must be unique, and each SAM/BAM record must have corresponding read 
+  name in the FASTQ file.
+
+Author: {author}
+Contact: {company}, {email}
 """
 
-import os
-import shutil
-import sys
-import subprocess as sp
-import shlex
-
-import re
-from operator import itemgetter
-from itertools import imap, groupby, chain,islice
-import tempfile
 import contextlib
+from itertools import chain, groupby, islice
 import logging
-	
-MAX_MEMORY = 4* (2**30) # Default to 4 GB of memory
-DEFAULT_TMP = ""
-logger = logging.getLogger('trimmark')
-ch = logging.StreamHandler()
+import os
+import re
+import shlex
+import shutil
+import subprocess as sp
+import sys
+import tempfile
+import time
+
+__author__ = 'Anand Patel'
+__company__ = "NuGEN Technologies Inc."
+__email__ = "techserv@nugen.com"
+__version__ = '2.1'
+
+IUPAC = 'ATCGRYMKSWHBVDN'
+ALLOWED_FASTQ = ['.fq','.fastq.gz']
+
+MAX_MEMORY = 4*(2**30) # in bytes
+DEFAULT_TMP="/tmp/nugen_" 
+
+logger = logging.getLogger('ote')
+
+# Define Logging parameters"
+logger.setLevel(logging.DEBUG)
+
+# Log to Console
+ch = logging.StreamHandler(sys.stdout)
+#ch.setLevel(logging.INFO)
 ch.setLevel(logging.DEBUG)
+
+# Specifies format of log
 ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname) 9s] - %(message)s'))
 logger.addHandler(ch)
-	
-logger.setLevel(20)
-IUPAC = 'ATCGRYMKSWHBVDN'
 
-##### Grabbed from trimmark.flow.fq
-ALLOWED_FASTQ = ['.fq','.fastq.gz']
+@contextlib.contextmanager
+def make_named_pipe(*args, **kwargs):
+	temp_dir = tempfile.mkdtemp(*args, **kwargs)
+	try:
+		path = os.path.join(temp_dir, 'named_pipe')
+		os.mkfifo(path)
+		yield path
+	finally:
+		shutil.rmtree(temp_dir)
+
+class SubprocessChain(object):
+	""" Creates sequential Popens, where output for the ith Popen is redirected to
+	 the i+1th Popen. 
+
+	  First cmd reads from filepath, and the final output must be to a file. If the last cmd does not have a '{out}', then 'tee {out}' is added as the final command. Each command must finish reading/writing from pipe otherwise errors are thrown.
+
+	WARNING: By default, std error are redirected to devnull. 
+	"""
+	def __init__(self, cmds, final_out=None, suppress_stderr=False, stdout=None):
+		""" Init
+		
+		Arguments:
+		  cmds -- iterable of basic parsing commands run in shell (str)
+		  final_out -- file path to write stdout of last process (str)
+		"""
+		self._cmds = list(cmds)
+		if suppress_stderr:
+			self._ferr = open(os.devnull, 'w')
+		else:
+			self._ferr = None
+		self._popen = []
+
+		if final_out is None and stdout is None:
+			raise Exception('Both final_out and stdout cannot be None')
+		self._out_path = final_out
+		self._stdout = stdout
+		if self._stdout is None:
+			self._fout = open(os.devnull, 'w')
+		else:
+			self._fout = self._stdout
+
+		self._POLL_TIME = 2 # Number of seconds to wait between polls of process finishes
+		self.errors = [] # error return code for commands in the process		
+
+	def __str__(self):
+		return ' | '.join(self._cmds)
+
+	def _flush(self):		
+		""" Flush out stdout of previous processes """
+		for p in self._popen[:-1]:
+			p.stdout.close()
+
+	def __enter__(self):
+		if self._stdout is None and not '{out}' in self._cmds[-1]:
+			self._cmds.append('tee {out}')
+		self._cmds[-1] = self._cmds[-1].format(out=self._out_path)
+		for idx, cmd in enumerate(self._cmds):
+			# PIPE all output except quench the last popen
+			stdout = sp.PIPE if idx<len(self._cmds)-1 else self._fout
+			# First Popen has no stdin otherwise connect previous Popen
+			stdin = None if idx==0 else self._popen[-1].stdout
+
+			self._popen.append(sp.Popen(shlex.split(cmd),stdin=stdin, stdout=stdout, stderr=self._ferr))
+	
+		return self
+		
+	def __exit__(self, type, value, tb):
+		self._flush()		
+		# Loop for processes to finish
+		returncode = dict((p,p.poll()) for p in self._popen)
+
+		success = None
+		while success is None:
+			returncode = dict((p,p.poll()) for p in self._popen)
+			for ret in returncode.itervalues():
+				if ret>0:
+					success = False
+			returned = list((v for v in returncode.itervalues() if not v is None))
+			if len(returned)==len(self._popen) and sum(returned)==0:
+				success = True
+
+			if success is None:
+				time.sleep(self._POLL_TIME)
+
+		# All processes finished
+		popen_idx = dict(zip(self._popen,xrange(len(self._popen))))
+		if not success:
+			for p, ret in returncode.iteritems():
+				if p.poll() is None:
+					p.terminate()
+				elif ret>0:
+					self.errors.append((popen_idx[p],returncode[p]))
+		
+		if not self._ferr is None:
+			self._ferr.close()	
+		if self._stdout is None:
+			self._fout.close()
+
+	def get_last_process(self):
+		return self._popen[-1]
 
 class FQFilePath(object):
 	""" Manages type of FastQ file 
@@ -125,105 +228,85 @@ class FQFilePath(object):
 			with open(self.fq, 'rb') as f:
 				lines = islice(f, 0,n)
 		return lines
+class DefaultWriter(object):
+	""" By Default writes markdup and rmdup files using samtools view converter """
+	def __init__(self, parent, markdup_path, rmdup_path):
+		self.parent = parent
+		self._fnull = open(os.devnull, 'wb')
+		self.markdup_path = markdup_path
+		self.rmdup_path = rmdup_path
+		#self._fnull = None
+		# open pipes to send data to 
+		samtobam_fmt = 'samtools view -bS -o {out_bam} -'
+		tomark_cmd =samtobam_fmt.format(out_bam=markdup_path) 
+		logger.debug(tomark_cmd)
+		self._tomark = sp.Popen(shlex.split(tomark_cmd), stdin=sp.PIPE, stderr=self._fnull)
 
-########## grab from trimmark.utils.io
-@contextlib.contextmanager
-def make_named_pipe(*args, **kwargs):
-	temp_dir = tempfile.mkdtemp(*args, **kwargs)
-	try:
-		path = os.path.join(temp_dir, 'named_pipe')
-		os.mkfifo(path)
-		yield path
-	finally:
-		shutil.rmtree(temp_dir)
-
-class SubprocessChainToStdout(object):
-	""" Creates sequential Popens, where output for the ith Popen is redirected to
-	 the i+1th Popen. 
-
-	  First cmd reads from filepath, and the stdout must be read from last process before exit
-
-	WARNING: By default, std error are redirected to devnull. 
-	"""
-	def __init__(self, cmds, suppress_stderr=False):
-		""" Init
+		torm_cmd =samtobam_fmt.format(out_bam=rmdup_path) 
+		logger.debug(torm_cmd)
+		self._torm = sp.Popen(shlex.split(torm_cmd), stdin=sp.PIPE, stderr=self._fnull)
+	def write(self, sam_row, to_rm_flag=True):
+		""" Writes toRM and toMark open processes """
+		sam_str = '\t'.join(sam_row)
+		if to_rm_flag:
+			self._torm.stdin.write(sam_str)
+		self._tomark.stdin.write(sam_str)
+	def flush(self):
+		""" Flushes all input to subprocess and waits """
+		self._tomark.stdin.close()
+		self._torm.stdin.close()
 		
-		Arguments:
-		  cmds -- iterable of basic parsing commands run in shell (str)
-		  final_out -- file path to write stdout of last process (str)
-		"""
-		self._cmds = list(cmds)
-		if suppress_stderr:
-			self._ferr = open(os.devnull, 'w')
-		else:
-			self._ferr = None
-		self._popen = []
+		self._tomark.wait()
+		self._torm.wait()
+	def close(self):
+		self.flush()
+		self._fnull.close()	
 
-	def __enter__(self):
-		for idx, cmd in enumerate(self._cmds):
-			# First Popen has no stdin otherwise connect previous Popen
-			stdin = None if idx==0 else self._popen[-1].stdout
+class UMIStripWriter(DefaultWriter):
+	def __init__(self, parent, markdup_path, rmdup_path):
+		DefaultWriter.__init__(self,parent, markdup_path, rmdup_path)
+	def write(self, sam_row, to_rm_flag=True):	
+		""" Writes toRM and toMark open processes, strips UMI from the header """
+		if not sam_row[0].startswith('@'):
+			# strip umi_length + 1 character from the end of a header
+			sam_row[0] = sam_row[0][:-(self.parent._umi.length+1)]
+		sam_str = '\t'.join(sam_row)
+		if to_rm_flag:
+			self._torm.stdin.write(sam_str)
+		self._tomark.stdin.write(sam_str)		
 
-			self._popen.append(sp.Popen(shlex.split(cmd),stdin=stdin, stdout=sp.PIPE, stderr=self._ferr))
-	
-		return self
+class UMISeq(object):
+	""" Extracts UMI sequence from SAM row."""
+	def __init__(self, length):
+		self.length = length
+	def get_umi_seq(self, sam_row):	
+		try:
+			return sam_row[0][-self.length:]  
+		except TypeError, IndexError:
+			raise Exception('Need to set umi length, to get umi from read name suffix')
 
-	def _flush(self):		
-		""" Flush out stdout of previous processes """
-		for p in self._popen[:-1]:
-			p.stdout.close()
-	def get_last_proc(self):
-		return self._popen[-1]
+class ValidUMISeq(UMISeq):
+	def __init__(self, length):
+		UMISeq.__init__(self,length)
+		self.umi_re = None
+	def get_umi_seq(self, sam_row):
+		""" Validates the UMI seq belongs to the IUPAC alphabet """
+		try:
+			umi_seq = sam_row[0][-self.length:]  
+		except TypeError, IndexError:
+			raise Exception('Need to set N6 length, to get N6 from read name suffix')
 
-	def __exit__(self, type, value, tb):
-		self._flush()		
-		# Wait for final subprocess to finish
-		self._popen[-1].wait()
-
-		if not self._ferr is None:
-			self._ferr.close()	
-
-	def __str__(self):
-		return ' | '.join(self._cmds)
-
-
-class SubprocessChain(SubprocessChainToStdout):
-	""" Creates sequential Popens, where output for the ith Popen is redirected to
-	 the i+1th Popen. 
-
-	  First cmd reads from filepath, and the final output must be to a file. If the last cmd does not have a '{out}', then 'tee {out}' is added as the final command.
-
-	WARNING: By default, std error are redirected to devnull. 
-	"""
-	def __init__(self, cmds, final_out, suppress_stderr=False):
-		""" Init
-		
-		Arguments:
-		  cmds -- iterable of basic parsing commands run in shell (str)
-		  final_out -- file path to write stdout of last process (str)
-		"""
-		SubprocessChainToStdout.__init__(self, cmds, suppress_stderr=suppress_stderr)
-		self._out_path = final_out
-		self._fout = open(os.devnull, 'w')
-		
-
-	def __enter__(self):
-		if not '{out}' in self._cmds[-1]:
-			self._cmds.append('tee {out}')
-		self._cmds[-1] = self._cmds[-1].format(out=self._out_path)
-		for idx, cmd in enumerate(self._cmds):
-			# PIPE all output except quench the last popen
-			stdout = sp.PIPE if idx<len(self._cmds)-1 else self._fout
-			# First Popen has no stdin otherwise connect previous Popen
-			stdin = None if idx==0 else self._popen[-1].stdout
-
-			self._popen.append(sp.Popen(shlex.split(cmd),stdin=stdin, stdout=stdout, stderr=self._ferr))
-	
-		return self
-		
-	def __exit__(self, type, value, tb):
-		SubprocessChainToStdout.__exit__(self,type,value,tb)
-		self._fout.close()
+		# Validates the UMI code matches a string of fixed umi length
+		try:
+			if not self.umi_re.match(umi_seq):
+				raise AssertionError('N6 sequence, {0} does not match IUPAC format. Is N6 in SAM qname?'.format(umi_seq))
+		except AttributeError:
+			# If no umi pattern is compiled, then sets adn returns the new umi_seq
+			logger.debug("Setting N6 pattern for validation")
+			self.umi_re = re.compile('^[%s]{%d}$'%(IUPAC,self.length))
+			return self.get_umi_seq(sam_row)
+				
+		return umi_seq
 
 class MarkRmDups(object):
 	""" Makes two bam files, one with PCR duplicates marked, one with duplicates removed.
@@ -234,31 +317,35 @@ class MarkRmDups(object):
 	def __init__(self, out_prefix, Writer=None):
 		self._out_mark_suffix = '.sorted.markdup.bam'
 		self._out_rm_suffix = '.sorted.dedup.bam'
-		self._out_dir = os.path.normpath(out_prefix)
-		logger.debug("Outputting to %s", self._out_dir)
+		self._out_prefix = os.path.normpath(out_prefix)
+		logger.debug("Outputting to %s", self._out_prefix)
+		self.aligned_count = None
 		self.unaligned_count = None
 		self.umi_dup_count = None
 		self.dup_count = None
 			
 		self._umi = None
-		if Writer is None:
-			self._writer = DefaultWriter(self)
-		else:
-			self._writer = Writer(self)
 
-		self._tomark = None # process to write stdin to
-		self._torm = None # process to write stdin to
+		if os.sep in self._out_prefix and not os.path.isdir(os.path.dirname(self._out_prefix)):
+			raise IOError('directory path not found %s'%self._out_prefix)
+
+		if Writer is None:
+			self._writer = DefaultWriter(self, self.get_markdup_path(), self.get_rmdup_path())
+		else:
+			self._writer = Writer(self, self.get_markdup_path(), self.get_rmdup_path())
+
 
 	def set_umi_length(self, length=6, validator=False):
-		if validator == False:
-			self._umi = UMISeq(length)
-		else:
+		if validator:
 			self._umi = ValidUMISeq(length)
+		else:
+			self._umi = UMISeq(length)
 
 	def iter_unique_position(self, sorted_sam_fh):
 		""" Generator that yields on groups of sam rows, where contig and pos are identical """
 		contig = None
 		pos = None
+		self.aligned_count = 0
 		self.unaligned_count = 0
 		grp = []
 		for line in sorted_sam_fh:
@@ -288,6 +375,7 @@ class MarkRmDups(object):
 				self.unaligned_count += 1
 			elif pos==n_pos and contig==n_contig:
 				grp.append(row)
+				self.aligned_count += 1
 			elif pos<n_pos or contig!=n_contig or contig is None:
 				# handles initial call, if contigs and positions are different 
 				if len(grp)>0:
@@ -295,8 +383,10 @@ class MarkRmDups(object):
 				grp = [row,]
 				contig = n_contig
 				pos = n_pos
+				self.aligned_count += 1
 			else:
 				#  Only reaches here if pos>n_pos and contig==l_contig
+				self.get_unique_molecule_id(row) # Catch UMI Seq validation errors
 				raise Exception('Sam file is not sorted.')
 
 		if len(grp)>0:
@@ -339,41 +429,17 @@ class MarkRmDups(object):
 	def get_markdup_path(self):
 		if self._out_mark_suffix is None:
 			return self.markdup_path
-		return self._out_dir + self._out_mark_suffix
+		return self._out_prefix + self._out_mark_suffix
 	def get_rmdup_path(self):
 		if self._out_rm_suffix is None:
 			return self.rmdup_path
-		return self._out_dir + self._out_rm_suffix
+		return self._out_prefix + self._out_rm_suffix
 
 	def mark_from_sorted_sam_with_umi_in_header(self, sorted_sam_fh):
 		""" Marks UMI duplicates in one bam, and Removes UMI duplicates in another bam """
 
 		self.umi_dup_count = 0
 		self.dup_count = 0
-		samtobam_fmt = 'samtools view -bS -o {out_bam} -'
-	
-		
-		if not os.path.isdir(os.path.dirname(self._out_dir)):
-			if self._out_dir == '.':
-				self._out_dir = os.path.join(self._out_dir, '')
-			elif not os.sep in self._out_dir:
-				self._out_dir = os.path.join('.',self._out_dir)
-			else:
-				raise IOError('directory path not found %s'%self._out_dir)
-
-		self._fnull = open(os.devnull, 'wb')
-		#self._fnull = None
-		# open pipes to send data to 
-		tomark_cmd =samtobam_fmt.format(out_bam=self.get_markdup_path()) 
-		logger.debug(tomark_cmd)
-		self._tomark = sp.Popen(shlex.split(tomark_cmd), stdin=sp.PIPE, stderr=self._fnull)
-
-		torm_cmd =samtobam_fmt.format(out_bam=self.get_rmdup_path()) 
-		logger.debug(torm_cmd)
-		self._torm = sp.Popen(shlex.split(torm_cmd), stdin=sp.PIPE, stderr=self._fnull)
-		
-		#self._tomark_raw = open(self.get_markdup_path().replace('.bam','.sam'), 'wb')
-		#self._torm_raw = open(self.get_rmdup_path().replace('.bam','.sam'), 'wb')
 		
 		for sam_rows in self.iter_unique_position(sorted_sam_fh):
 			#logger.debug(sam_rows)
@@ -383,7 +449,7 @@ class MarkRmDups(object):
 			elif len(sam_rows)>1:
 				#logger.debug('Count of sam rows in group, %s', len(sam_rows))
 				self.dup_count += len(sam_rows)-1
-				
+		
 				for key, umi_sam_rows in groupby(sorted(sam_rows, key=self.get_unique_molecule_id), self.get_unique_molecule_id):
 					# rows matching a unique molecule
 					is_best = True
@@ -391,11 +457,11 @@ class MarkRmDups(object):
 					for sam_row in sorted(umi_sam_rows, key=lambda x:int(x[4]), reverse=True):
 						# sorts rows by maximum MAPq score
 						flag = int(sam_row[1])
+						#if is_best and sam_row[4]!='255':
 						if is_best:
 							# executed exactly once.
 							self.set_flag_and_write(sam_row, False)
 							is_best = False
-
 						else:
 							# mark the duplicate
 							self.set_flag_and_write(sam_row, True)
@@ -403,15 +469,7 @@ class MarkRmDups(object):
 							#umi_dup_count += 1
 					#logger.debug('Key %s, Unique Dup Count, %s: Len(rows)=%s', key, umi_dup_count, len(sam_rows))
 
-		self._tomark.stdin.close()
-		self._torm.stdin.close()
-		self._tomark.wait()
-		self._torm.wait()
-		try:
-			self._fnull.close()
-		except:
-			pass
-
+		self._writer.close()
 
 class MarkRmDupsPairedEnd(MarkRmDups):
 	""" Makes two bam files, one with PCR duplicates marked, one with duplicates removed from Paired End data
@@ -438,6 +496,7 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 		"""
 		contig = None
 		pos = None
+		self.aligned_count = 0
 		self.unaligned_count = 0
 		grp = []
 		interleaved_with_grp = []
@@ -483,17 +542,20 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 					yield [row,]
 			elif n_flag & 0x10 == 0 and n_flag & 0x20 == 0x20 and n_tlen>0 and  pos==n_pos and contig==n_contig:
 				# consider only Forward/reverse mapping reads, with this being the first read.
+				self.aligned_count += 1
 				grp.append(row)
 			elif n_flag & 0x10 == 0 and n_flag & 0x20 == 0x20 and n_tlen>0 and  pos<n_pos or contig!=n_contig or contig is None:
 				# handles initial call, if contigs and positions are different 
 				for pgrp in self._iter_grp_and_post(grp,interleaved_with_grp):
 						yield pgrp
 				#interleaved_with_grp = []
+				self.aligned_count += 1
 				grp = [row,]
 				contig = n_contig
 				pos = n_pos
 			else:
 				#  Only reaches here if pos>n_pos and contig==l_contig
+				self.get_unique_molecule_id(row) # Catch UMI Seq validation errors
 				raise Exception('Sam file is not sorted. or Unexpected read with FLAG %d. Expects 0x1, 0x2, 0x10, and 0x20 to be set.', n_flag)
 
 		for pgrp in self._iter_grp_and_post(grp,interleaved_with_grp):
@@ -517,24 +579,6 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 
 		self.umi_dup_count = 0
 		self.dup_count = 0
-		samtobam_fmt = 'samtools view -bS -o {out_bam} -'
-		
-		if not os.path.isdir(os.path.dirname(self._out_dir)):
-			if self._out_dir == '.':
-				self._out_dir = os.path.join(self._out_dir, '')
-			elif not os.sep in self._out_dir:
-				self._out_dir = os.path.join('.',self._out_dir)
-			else:
-				raise IOError('directory path not found %s'%self._out_dir)
-
-		self._fnull = open(os.devnull, 'wb')
-		tomark_cmd =samtobam_fmt.format(out_bam=self.get_markdup_path()) 
-		logger.debug(tomark_cmd)
-		self._tomark = sp.Popen(shlex.split(tomark_cmd), stdin=sp.PIPE, stderr=self._fnull)
-
-		torm_cmd =samtobam_fmt.format(out_bam=self.get_rmdup_path()) 
-		logger.debug(torm_cmd)
-		self._torm = sp.Popen(shlex.split(torm_cmd), stdin=sp.PIPE, stderr=self._fnull)
 	
 		is_reverse_read_a_dup = {} 
 	
@@ -551,21 +595,22 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 			elif len(sam_rows)>1:
 				#logger.debug('Count of sam rows in group, %s', len(sam_rows))
 				self.dup_count += len(sam_rows)-1
-				
+
 				for key, umi_sam_rows in groupby(sorted(sam_rows, key=self.get_unique_molecule_id), self.get_unique_molecule_id):
 					# rows matching a unique molecule
 					is_best = True
 					for sam_row in sorted(umi_sam_rows, key=lambda x:int(x[4]), reverse=True):
 						# sorts rows by maximum MAPq score
 						flag = int(sam_row[1])
+						#if is_best and sam_row[4]!='255':
 						if is_best:
 							# executed exactly once.
-							self.set_flag_and_write(sam_row, False)
 							is_reverse_read_a_dup[sam_row[0]] = False
+							self.set_flag_and_write(sam_row, False)
 							is_best = False
 						else:
-							self.set_flag_and_write(sam_row, True)
 							is_reverse_read_a_dup[sam_row[0]] = True
+							self.set_flag_and_write(sam_row, True)
 							self.umi_dup_count += 1 
 					#logger.debug('Key %s, Unique Dup Count, %s: Len(rows)=%s', key, umi_dup_count, len(sam_rows))
 
@@ -574,70 +619,98 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 		for k,v in is_reverse_read_a_dup.iteritems():
 			logger.error('QNAME: %s IsDup: %d', k,v)
 
-		self._tomark.stdin.close()
-		self._torm.stdin.close()
-		self._tomark.wait()
-		self._torm.wait()
-		try:
-			self._fnull.close()
-		except:
-			pass
+		self._writer.close()
+	
+class IndexFinder(object):
+	def __init__(self, fq_file):
+		self._fq = FQFilePath(fq_file)
+		self.index_seq_length = None # Length of index sequences
+		self.index_seq_count = None
 
-class DefaultWriter(object):
-	def __init__(self, parent):
-		self.parent = parent
-	def write(self, sam_row, to_rm_flag=True):
-		""" Writes toRM and toMark open processes """
-		sam_str = '\t'.join(sam_row)
-		if to_rm_flag:
-			self.parent._torm.stdin.write(sam_str)
-		self.parent._tomark.stdin.write(sam_str)
+	def _check_valid_sequences_by_count(self, seq_lines, seq_words, seq_chars, max_seq, fq_check):
+		""" Checks if all index sequences have the same length """
+		if seq_lines!=seq_words:
+			logger.info('Not valid %s FASTQ File, ill-formatted Index sequences, possibly spaces', fq_check)
+			return False
+		elif (seq_chars/(max_seq+1))!=seq_lines:
+			logger.info('Not valid %s FASTQ File, differing lengths of Index sequences', fq_check)
+			return False
 
-class UMIStripWriter(DefaultWriter):
-	def __init__(self, parent):
-		DefaultWriter.__init__(self,parent)
-	def write(self, sam_row, to_rm_flag=True):	
-		""" Writes toRM and toMark open processes, strips UMI from the header """
-		if not sam_row[0].startswith('@'):
-			# strip umi_length + 1 character from the end of a header
-			sam_row[0] = sam_row[0][-(self.parent._umi.length+1):]
-		sam_str = '\t'.join(sam_row)
-		if to_rm_flag:
-			self.parent._torm.stdin.write(sam_str)
-		self.parent._tomark.stdin.write(sam_str)
+		self.index_seq_length =  max_seq
+		return True
+	def _get_check_index_cmds(self):
+		cmds = ['cat {fq}'.format(fq=self._fq.fq)]
+		if self._fq.is_compressed():
+			cmds.append('gzip -c -d')
+		cmds.append('sed -n 2~4p')
+		return cmds
 
-class UMISeq(object):
-	""" Extracts UMI sequence from SAM row."""
-	def __init__(self, length):
-		self.length = length
-	def get_umi_seq(self, sam_row):	
-		try:
-			return sam_row[0][-self.length:]  
-		except TypeError, IndexError:
-			raise Exception('Need to set umi length, to get umi from read name suffix')
+	def _get_index_cmds(self):
+		cmds = ['cat {fq}'.format(fq=self._fq.fq)]
+		if self._fq.is_compressed():
+			cmds.append("gzip -c -d")
 
-class ValidUMISeq(UMISeq):
-	def __init__(self, length):
-		UMISeq.__init__(self,length)
-		self.umi_re = None
-	def get_umi_seq(self, sam_row):
-		""" Validates the UMI seq belongs to the IUPAC alphabet """
-		try:
-			umi_seq = sam_row[0][-self.length:]  
-		except TypeError, IndexError:
-			raise Exception('Need to set umi length, to get umi from read name suffix')
+		# Grabs the first word of the read title and tabs it with the FASTQ sequence (index sequence)
+		sed_pair_reformat = r"$!N;s/^@\?\([^ \t]\+\).*\n/\1\t/"
+		cmds.append("sed -e '{re}'".format(re=sed_pair_reformat))
+		cmds.append("sed -n 1~2p")
+		return cmds
 
-		# Validates the UMI code matches a string of fixed umi length
-		try:
-			if not self.umi_re.match(umi_seq):
-				raise AssertionError('UMI sequence, {0} does not match IUPAC format. Is UMI in SAM header?'.format(umi_seq))
-		except AttributeError:
-			# If no umi pattern is compiled, then sets adn returns the new umi_seq
-			logger.debug("Setting UMI pattern for validation")
-			self.umi_re = re.compile('^[%s]{%d}$'%(IUPAC,self.length))
-			return self.get_umi_seq(sam_row)
-				
-		return umi_seq
+	def _get_check_read_title_cmds(self):
+		cmds = ['cat {fq}'.format(fq=self._fq.fq)]
+		if self._fq.is_compressed():
+			cmds.append('gzip -c -d')
+		cmds.append('sed -n 1~4p')
+		cmds.append('grep -o "[ACGTN]\{6,\}"')
+		return cmds
+
+	def _get_read_title_cmds(self):
+		cmds = ['cat {fq}'.format(fq=self._fq.fq)]
+		if self._fq.is_compressed():
+			cmd.append("gzip -c -d")
+
+		cmds.append('sed -n 1~4p')
+		sed_reformat = r"s/^@\([^ \t]\+\).*\([ACGTN]\{6,\}\).*/\1\t\2/"
+		cmds.append("sed -e '{re}'".format(re=sed_reformat))
+		return cmds
+
+	def is_index_fastq(self):
+		""" Index FASTQ has sequence lengths 6,14,12 """ 
+		cmds = self._get_check_index_cmds()
+		# Always ordered: newline, word, character,  byte,  maximum  line
+		cmds.append('wc -lwcmL')
+		with SubprocessChain(cmds, stdout=sp.PIPE) as pchain:
+			logger.debug('Checking FASTQ is Index fastq, %s', pchain)
+			stdout, stderr = pchain.get_last_process().communicate()
+			seq_lines, seq_words, seq_chars, seq_byte, max_seq = map(int,stdout.strip().split())
+		self.index_seq_count = seq_lines
+		if not max_seq in [6,12,14]:
+			return False
+
+		return self._check_valid_sequences_by_count(seq_lines, seq_words, seq_chars, max_seq, 'Index')
+	def is_index_in_read_title(self):
+		""" Check if [ACGTN]6+ in read title """
+		# Requires knowing the number of Records in FASTQ file to be valid
+		assert not self.index_seq_count is None 
+		cmds = self._get_check_read_title_cmds()
+		# Always ordered: newline, word, character,  byte,  maximum  line
+		cmds.append('wc -lwcmL')
+		with SubprocessChain(cmds, stdout=sp.PIPE) as pchain:
+			logger.debug('Checking FASTQ is Read fastq, %s', pchain)
+			stdout, stderr = pchain.get_last_process().communicate()
+			seq_lines, seq_words, seq_chars, seq_byte, max_seq= map(int,stdout.strip().split())
+		return self._check_valid_sequences_by_count(seq_lines, self.index_seq_count, seq_chars, max_seq, 'Read')
+
+	def get_cmds_for_parsing_fastq(self):
+		if self.is_index_fastq():
+			logger.info('Using N6 from Index FASTQ sequence')
+			return self._get_index_cmds()
+		elif self.is_index_in_read_title():
+			logger.info('Using N6 from FASTQ Read Title')
+			return self._get_read_title_cmds()
+		else:
+			logger.error('No Valid N6 information found in Read Title, please provide a valid Index FASTQ file')
+			sys.exit(1)
 
 class PrepDeDup(object):
 	""" Autodetects modular flow of file processing required for marking and removing deduplicated reads
@@ -647,17 +720,16 @@ class PrepDeDup(object):
 	Creates BASH scripts, and runs them for sanity checks and processing files on the stream.	
 	"""
 
-	def __init__(self, sam_file, index_fq_file=None, out_prefix=''):
+	def __init__(self, sam_file, fq_file=None, out_prefix=''):
 		""" Init 
 
 		Arguments:
 		  sam_file -- absolute path to sam/bam sorted/unsorted file (str)
-		  index_fq -- absolute path to fastq or gzipped fastq (str)
+		  fq_file -- absolute path to fastq or gzipped fastq (str)
 		  out_prefix -- absolute prefix of path to write sorted BAM files to (str)
 		"""
 		
 		self._sam = sam_file
-		self._index = None if index_fq_file is None else FQFilePath(index_fq_file)
 		self._out_prefix = out_prefix
 
 		# Sets how to grab sam regardless of bam or sam files	
@@ -666,47 +738,17 @@ class PrepDeDup(object):
 		else:
 			self._nohead_sam_cmd = "grep -v '^@' {sam}".format(sam=self._sam)
 
-		# Sets how to parse fastq files, must pass through
 		# series of piped processes
-		if self._index:
-			sed_pair_reformat = r"$!N;s/^@\?\([^ \t]\+\).*\n/\1\t/"
-			if self._index.is_compressed():
-				self._fq_cmds = ("gzip -c -d {fq}".format(fq=self._index.fq), "sed -e '{re}'".format(re=sed_pair_reformat),  "sed -n 1~2p")
-			else:
-				self._fq_cmds = ("sed -e '{re}' {fq}".format(fq=self._index.fq,re=sed_pair_reformat), "sed -n 1~2p")
+		
+		self._index = None if fq_file is None else FQFilePath(fq_file)
 
 		# how to obtain UMI from fq sequence
 		self._umi_from_fq_fmt = r"""awk '{{print $1 "\t" substr($2,length($2)-{s:d}+1,{l:d});}}'"""
-
 		self.DupMain = MarkRmDups
+		self.type_str = 'single'
 
 	def is_bam(self):
 		return self._sam[-4:]=='.bam'
-	def is_sam_and_fq_synced(self):
-		""" Check if sam and index are row wise synced with the same read name """
-		if self._index is None:
-			return False
-		
-		with make_named_pipe(prefix=DEFAULT_TMP) as fqcut_path, make_named_pipe(prefix=DEFAULT_TMP) as samcut_path:
-			
-			# Process reads from named pipes.
-			diff_cmd = "diff -q {sam} {fq}".format(sam=samcut_path, fq=fqcut_path)
-			diff_p = sp.Popen(shlex.split(diff_cmd), stdout=sp.PIPE, stderr=sp.PIPE)
-		
-			# Chain of commands to output to named pipe
-			cut = 'cut -f 1'
-			fqcut_chain = chain(self._fq_cmds, [cut,])	
-			samcut_chain = [self._nohead_sam_cmd, cut]
-			with SubprocessChain(samcut_chain, samcut_path, suppress_stderr=True) as samcut, SubprocessChain(fqcut_chain, fqcut_path, suppress_stderr=True) as fqcut:		
-				logger.debug("Shell FQ parsing one-liner: %s", fqcut)
-				logger.debug("Shell SAM parsing one-liner: %s", samcut)
-
-				diff_out, diff_err = diff_p.communicate()
-			logger.debug("Diff out %s, err %s", diff_out, diff_err)
-			if len(diff_out.strip())==0:
-				return True
-			else:
-				return False
 
 	def process_unsynced_sam(self, umi_start, umi_length):
 		""" Processing sam that is not synced. Also performs Sanity Checks on RNAME key"""
@@ -714,8 +756,18 @@ class PrepDeDup(object):
 			raise Exception('Requires a UMI length')
 		if umi_start is None:
 			raise Exception('Requires a UMI start')
+		if self._index is None:
+			raise Exception('Requires an index FASTQ')
 
-		logger.info("Processing Unsynced SAM/BAM with UMI found in Index Fastq")
+		# Sets how to parse fastq files, must pass through
+		self._index_parser = IndexFinder(self._index.fq)
+		self._fq_cmds = self._index_parser.get_cmds_for_parsing_fastq()
+		
+		if self._index_parser.index_seq_length < umi_start:
+			logger.error("Specified start {0:d} is before the length of Index sequence {1:d}".format(umi_start, self._index_parser.index_seq_length))
+			
+
+		logger.info("Appending N6 sequence to SAM/BAM qname")
 		w = self.DupMain(self._out_prefix, Writer=UMIStripWriter)
 		w.set_umi_length(umi_length)
 
@@ -727,7 +779,8 @@ class PrepDeDup(object):
 			with SubprocessChain(fq_chain, fq_path.name) as fq_p, SubprocessChain([self._nohead_sam_cmd,sort_by_name], sam_path.name, suppress_stderr=True) as sam_p:
 					logger.debug("Shell FQ: %s", fq_p)
 					logger.debug("Shell SAM: %s", sam_p)
-			
+		
+	
 			# Checks if the Index has unique rnames
 			uniq_cmd = 'sort -k 1b,1 -c -u {fq}'.format(fq=fq_path.name)
 			logger.debug(uniq_cmd)
@@ -777,76 +830,24 @@ class PrepDeDup(object):
 						join_cmd = "join -t '	' -j 1 {fq} {sam}".format(fq=fq_path.name, sam=sam_path.name)
 						add_umi_cmd = r"sed -e 's/^\([^\t]\+\)\t\([^\t]\+\)/\1:\2/'"	
 						with SubprocessChain([join_cmd, add_umi_cmd], umi_join_path) as umi_nohead_sam:
-							logger.debug('UMI sam %s', umi_nohead_sam)
+							logger.debug('Add N6 to sam: %s', umi_nohead_sam)
 			#raw_input('continue? [enter] \n')
 			self._sam = sorted_umi_sam.name
-			w = self.process_sorted_sam_with_umi_in_rname(umi_length)
+			self.process_sorted_sam_with_umi_in_rname(umi_length, dup_obj=w)
 			#sorted_umi_sam.seek(0)
 			#w.mark_from_sorted_sam_with_umi_in_header(sorted_umi_sam)
 		return w
-	def process_pairwise_sam(self, umi_start, umi_length):
-		""" Processins pairwise sam"""
-		if umi_length is None:
-			raise Exception('Requires a UMI length')
-		if umi_start is None:
-			raise Exception('Requires a UMI start')
 
-		logger.info("Processing Synced SAM/BAM with UMI found in Index Fastq")
-		w = self.DupMain(self._out_prefix, Writer=UMIStripWriter)
-		w.set_umi_length(umi_length)
-
-		# A little not obvious. Requires thinking of a pipe, backwards
-		# Define the reader, before you start writing.
-
-		# Declare all the pipes we will use first
-		with make_named_pipe(prefix=DEFAULT_TMP) as fq_path, make_named_pipe(prefix=DEFAULT_TMP) as sam_path, make_named_pipe(prefix=DEFAULT_TMP) as umi_sam_path, make_named_pipe(prefix=DEFAULT_TMP) as sam_head_path, make_named_pipe(prefix=DEFAULT_TMP) as umi_join_path, tempfile.NamedTemporaryFile(prefix=DEFAULT_TMP, suffix='_umi_sorted.bam') as sorted_umi_sam:
-	
-			# SAMwUMIwHead --> BAMwUMI --> Sorted BAMwUMI --> Sorted SAMwUMIwHead
-			samtobam = 'samtools view -bhS {sam}'.format(sam=umi_sam_path)
-			#sort_bam_cmd = 'samtools sort -o -m {mem} - -'.format(mem=MAX_MEMORY)
-			#bamtosam = 'samtools view -h -'
-			sort_bam_cmd = 'samtools sort -m {mem} - {{out}}'.format(mem=MAX_MEMORY)
-			#with SubprocessChain([samtobam, sort_bam_cmd, bamtosam], sorted_umi_sam.name) as sort_sam:
-			with SubprocessChain([samtobam, sort_bam_cmd], sorted_umi_sam.name[:-4], suppress_stderr=True) as sort_sam:
-				logger.debug('Sorting %s',sort_sam)
-
-				# Redirection for header SAMwUMIwHead <-- SAM/BAMwHead <-- SAMwUMI
-				cat_cmd = "cat {head} {umi_join}".format(head=sam_head_path, umi_join=umi_join_path)
-				with SubprocessChain([cat_cmd,], umi_sam_path) as umi_sam:
-					logger.debug('Cat %s', umi_sam)
-					# Adds SAM header for sorting with bam
-					sam_opt = '' if self.is_bam() else 'S'
-					add_header_cmd = 'samtools view -H{opt} -o {head} {sam}'.format(opt=sam_opt, sam=self._sam, head=sam_head_path)
-					logger.debug('Add header %s',add_header_cmd)
-					with open(os.devnull, 'w') as fnull:
-						p = sp.check_call(shlex.split(add_header_cmd), stderr=fnull)
-
-					# Add SAM file with UMI in header
-					join_cmd = "join -t '	' --nocheck-order -j 1 {fq} {sam}".format(fq=fq_path, sam=sam_path)
-					add_umi_cmd = r"sed -e 's/^\([^\t]\+\)\t\([^\t]\+\)/\1:\2/'"
-					with SubprocessChain([join_cmd, add_umi_cmd], umi_join_path) as umi_nohead_sam:
-						logger.debug('UMI sam %s', umi_nohead_sam)
-
-						# Parse FQ and SAM ad add UMI
-						# Sort and Validate matching names"
-						fq_chain = chain(self._fq_cmds, [self._umi_from_fq_fmt.format(s=umi_start, l=umi_length)])
-						with SubprocessChain(fq_chain, fq_path) as fq_p, SubprocessChain([self._nohead_sam_cmd,], sam_path) as sam_p:
-							logger.debug("Shell FQ: %s", fq_p)
-							logger.debug("Shell SAM: %s", sam_p)
-
-
-			self._sam = sorted_umi_sam.name
-			w = self.process_sorted_sam_with_umi_in_rname(umi_length)
-			#sorted_umi_sam.seek(0)
-			#w.mark_from_sorted_sam_with_umi_in_header(sorted_umi_sam)
-		return w
-	def process_sorted_sam_with_umi_in_rname(self, umi_length):
+	def process_sorted_sam_with_umi_in_rname(self, umi_length, dup_obj=None):
 		""" Processes a SAM/BAM file with the a fixed length UMI sequence appended to read name """
 		if umi_length is None:
-			raise Exception('Requires a UMI length')
-		w = self.DupMain(self._out_prefix)
-		w.set_umi_length(umi_length, validator=True)
-		logger.info("Processing Sorted SAM/BAM with UMI in suffix of read name (assumes sorted sam)")
+			raise Exception('Requires a N6 length')
+		if dup_obj is None:
+			w = self.DupMain(self._out_prefix)
+			w.set_umi_length(umi_length, validator=True)
+		else:
+			w = dup_obj
+		logger.info("Processing sorted SAM/BAM with N6 sequence in qname (assumes sorted)")
 		if self.is_bam():
 			tosam_cmd = 'samtools view -h {bam}'.format(bam=self._sam)  
 			logger.debug(tosam_cmd)
@@ -859,48 +860,64 @@ class PrepDeDup(object):
 			return w
 		else:
 			with open(self._sam, 'rb') as f:
-				w.mark_from_sorted_sam_with_umi_in_header(f)
-	
+				try:
+					w.mark_from_sorted_sam_with_umi_in_header(f)
+				except AssertionError as e:
+					logger.error(e.message)
+					sys.exit(1)
 			return w
 
 	def _log_output(self, dup_obj):
-		logger.info('      Unaligned count: {0:010d}'.format(dup_obj.unaligned_count))
-		logger.info('Positional dups count: {0:010d}'.format(dup_obj.dup_count))
-		logger.info('        N6 dups count: {0:010d}'.format(dup_obj.umi_dup_count))
+		try:
+			p_rate = dup_obj.dup_count/float(dup_obj.aligned_count)
+		except ZeroDivisionError:
+			p_rate = 0
+		try:
+			d_rate = dup_obj.umi_dup_count/float(dup_obj.aligned_count)
+		except ZeroDivisionError:
+			d_rate = 0
+		logger.info('        Aligned count: {0: 13d}'.format(dup_obj.aligned_count))
+		logger.info('      Unaligned count: {0: 13d}'.format(dup_obj.unaligned_count))
+		logger.debug('Positional dups count: {0: 13d} ({1:0.4f} rate)'.format(dup_obj.dup_count,p_rate))
+		logger.info('        N6 dups count: {0: 13d} ({1:0.4f} rate)'.format(dup_obj.umi_dup_count, d_rate))
 		logger.info('Deduplication success.')
+		with open(self._out_prefix+"_dup_log.txt", 'wb') as f:
+			f.write('\t'.join(['aligned_count','unaligned_count','position_dup_count','frac_position_dup','n6_dup_count','frac_n6_dup'])+'\n')
+			metrics = [dup_obj.aligned_count, dup_obj.unaligned_count, dup_obj.dup_count, p_rate, dup_obj.umi_dup_count, d_rate]
+			f.write('\t'.join(['{0:d}','{1:d}','{2:d}','{3:0.4f}','{4:d}','{5:0.4f}']).format(*metrics)+'\n')
+		
 	
 	def main(self,umi_start=None,umi_length=None):
 		""" Checks/validates the inputs and identifies a pipeline to use for marking and removal of duplicates """
-		logger.info('Deduplicating single end reads...')
+		logger.info('Deduplicating NuGEN Ovation Target Enrichment {0} end reads...'.format(self.type_str))
 		if self._index is None:
 			w = self.process_sorted_sam_with_umi_in_rname(umi_length)
-		elif self.is_sam_and_fq_synced():
-			w = self.process_pairwise_sam(umi_start, umi_length)
 		else:
-			logger.info('SAM and FQ are not synced')
 			w = self.process_unsynced_sam(umi_start, umi_length)	
 		self._log_output(w)
+		logger.info('Created output file {0} with duplicates marked'.format(w._writer.markdup_path))	
+		logger.info('Created output file {0} with duplicates removed'.format(w._writer.rmdup_path))	
 		return w
 
 class PrepDeDupPairedEnd(PrepDeDup):
 	""" Treats Input SAM as containing Paired End data, and marks/removes potential PCR duplicate
 	  templates
 	"""
-	def __init__(self, sam_file, index_fq_file=None, out_prefix=''):
-		PrepDeDup.__init__(self, sam_file, index_fq_file, out_prefix)
+	def __init__(self, sam_file, fq_file=None, out_prefix=''):
+		PrepDeDup.__init__(self, sam_file, fq_file, out_prefix)
 
 		self.DupMain = MarkRmDupsPairedEnd
-	def main(self,umi_start=None,umi_length=None):
-		logger.info('Deduplicating paired end reads...')
-		if self._index is None:
-			w = self.process_sorted_sam_with_umi_in_rname(umi_length)
-		elif self.is_sam_and_fq_synced():
-			w = self.process_pairwise_sam(umi_start, umi_length)
-		else:
-			logger.info('SAM and FQ are not synced')
-			w = self.process_unsynced_sam(umi_start, umi_length)	
-		self._log_output(w)
-		return w
+		self.type_str = 'paired'
+#	def main(self,umi_start=None,umi_length=None):
+#		logger.info('Deduplicating NuGEN Ovation Target Enrichment  end reads...')
+#		if self._index is None:
+#			w = self.process_sorted_sam_with_umi_in_rname(umi_length)
+#		else:
+#			w = self.process_unsynced_sam(umi_start, umi_length)	
+#		self._log_output(w)
+#		logger.info('Created output file {0} with duplicates marked'.format(w._writer.markdup_path))	
+#		logger.info('Created output file {0} with duplicates removed'.format(w._writer.rmdup_path))	
+#		return w
 
 def from_sorted_bam(bam_fpath, out_prefix, umi_length=6):
 	w = MarkRmDups(out_prefix)
@@ -927,32 +944,52 @@ def from_sorted_sam_stdin(out_prefix, umi_length=6):
 
 def file_check(parser, arg):
 	if not os.path.exists(arg):
-		parser.error("The file %s does not exist!" %arg)
+		parser.error("The file {0} does not exist!".format(arg))
 	else:
 		return str(arg)
 
 if __name__ == '__main__':
-	import argparse, sys
-	
-	parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-	parser.add_argument('-2','--paired-end', dest='pe', action='count', default=0, help="SAM contains paired end reads, remove potential PCR template duplicates.")
-	parser.add_argument('--index-fq', dest='index_fq', type=lambda x:file_check(parser, x), default=None, help='index file paired with input sam')
-	parser.add_argument('-o','--out', dest='out_prefix', default='./prefix', help='prefix of output file paths for sorted BAMs (default will create ./prefix.sorted.markdup.bam, ./prefix.sorted.dedups.bam)')
-	parser.add_argument('-s','--start', dest='start', type=int, default=6, help="where to start considering the UMI (default = last 6 bases are considered)")
-	parser.add_argument('-l','--length', dest='length', type=int, default=6, help="length of UMI sequence (default = 6)")
-	#parser.add_argument('-l', help="log file to write statistics to (optional)")
-	parser.add_argument('-v','--version', action='version', version='%(prog)s 0.1')
-	parser.add_argument('sam', type=lambda x:file_check(parser, x), help='input sorted/unsorted SAM/BAM')
+	import argparse, sys, logging
+
+	parser = argparse.ArgumentParser(description=__doc__.format(author=__author__, company=__company__, email=__email__), formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
+		
+	pgroup = parser.add_argument_group("Input")
+	pgroup.add_argument('sam', metavar='IN.sam|IN.bam', type=lambda x:file_check(parser, x), help='input sorted/unsorted SAM/BAM')
+
+	ogroup = parser.add_argument_group("Options")
+	ogroup.add_argument('-2','--paired-end', dest='pe', action='count', default=0, help="use paired end deduping with template. SAM/BAM alignment must contain paired end reads.")
+	ogroup.add_argument('-f', dest='fq', metavar='INDEX.fq|READ.fq', type=lambda x:file_check(parser, x), default=None, help='FASTQ file paired with input SAM/BAM (REQUIRED if SAM/BAM does not have N6 sequence appended to qname/read title)')
+	ogroup.add_argument('-o','--out', dest='out_prefix', default='prefix', help='prefix of output file paths for sorted BAMs (default will create prefix.sorted.markdup.bam, prefix.sorted.dedup.bam, prefix_dup_log.txt)')
+	ogroup.add_argument('-s','--start', dest='start', type=int, default=6, help="position in index read where N6 sequence begins. This should be a 1-based value that counts in from the END of the read. (default = 6)")
+	ogroup.add_argument('-l','--length', dest='length', type=int, default=6, help="length of N6 sequence (default = 6)")
+	ogroup.add_argument('--debug', dest='debug', action='store_true', default=False, help=argparse.SUPPRESS)
+	#ogroup.add_argument('-l', help="log file to write statistics to (optional)")
+	ogroup.add_argument('-v','--version', action='version', version='%(prog)s '+ __version__)
+	ogroup.add_argument('-h','--help',action='help', help='show this help message and exit')
 
 	args = parser.parse_args()
 
-	if args.pe > 0:
-		w = PrepDeDupPairedEnd(args.sam, index_fq_file=args.index_fq, out_prefix=args.out_prefix)
+	if args.debug:
+		logger.setLevel(logging.DEBUG)
 	else:
-		w = PrepDeDup(args.sam, index_fq_file=args.index_fq, out_prefix=args.out_prefix)
+		logger.setLevel(logging.INFO)	
 
+	if args.length>args.start:
+		parser.error("Invalid N6 subsequence: The start position {0} counting from the end is less than the length {1}".format(args.start, args.length))
 
-	w.main(umi_start=args.start, umi_length=args.length)
+	if args.pe > 0:
+		w = PrepDeDupPairedEnd(args.sam, fq_file=args.fq, out_prefix=args.out_prefix)
+	else:
+		w = PrepDeDup(args.sam, fq_file=args.fq, out_prefix=args.out_prefix)
+
+	if args.debug:
+		w.main(umi_start=args.start, umi_length=args.length)
+	else:
+		try:
+			w.main(umi_start=args.start, umi_length=args.length)
+		except Exception as e:
+			logger.error(e.message)
+			sys.exit(1)
 	#from_sorted_bam(sys.argv[1], sys.argv[2], int(sys.argv[3]))
 	#from_sorted_sam_stdin(sys.argv[1], int(sys.argv[2]))
 	
