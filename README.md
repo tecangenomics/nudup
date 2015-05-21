@@ -1,7 +1,10 @@
-nudup -- NuGEN's tool for deduplicating reads using N6 sequence information
+NuDup -- Marks/removes PCR duplicates using the N6 sequence technology used in NuGEN's Ovation Target Enrichment libraries.
 =============================
 
-Script requires
+![](http://nugendata.com/images/nugen_logo_noedge.png)  
+[www.nugen.com](http://www.nugen.com)
+
+Requirements
 -----------------------------
 - samtools-0.1.18 or higher [samtools page](http://samtools.sourceforge.net/) Tested on 0.1.18
 - python2.7 [anaconda page](http://continuum.io/downloads) Tested on 2.7.7 
@@ -64,3 +67,6 @@ Options:
   -h, --help            show this help message and exit
 ```
 
+Support
+-----------------------------  
+For questions, contact NuGEN Technologies Technical Support techserv@nugen.com
