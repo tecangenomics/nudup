@@ -1,4 +1,4 @@
-NuDup -- Marks/removes PCR duplicates using the N6 sequence technology used in NuGEN's Ovation Target Enrichment libraries.
+NuDup -- Marks/removes PCR introduced duplicate molecules based on the molecular tagging technology used in NuGEN's products.
 =============================
 
 ![](http://nugendata.com/images/nugen_logo_noedge.png)  
