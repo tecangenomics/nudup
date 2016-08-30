@@ -697,7 +697,7 @@ class IndexFinder(object):
 		return cmds
 
 	def is_index_fastq(self):
-		""" Index FASTQ has sequence lengths 6,14,12 """ 
+		""" Index FASTQ has sequence lengths 6,8,14,12,16 """ 
 		cmds = self._get_check_index_cmds()
 		# Always ordered: newline, word, character,  byte,  maximum  line
 		cmds.append('wc -lwcmL')
@@ -706,7 +706,7 @@ class IndexFinder(object):
 			stdout, stderr = pchain.get_last_process().communicate()
 			seq_lines, seq_words, seq_chars, seq_byte, max_seq = map(int,stdout.strip().split())
 		self.index_seq_count = seq_lines
-		if not max_seq in [6,12,14]:
+		if not max_seq in [6,8,12,14,16]:
 			return False
 
 		return self._check_valid_sequences_by_count(seq_lines, seq_words, seq_chars, max_seq, 'Index')
