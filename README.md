@@ -1,10 +1,10 @@
-NuDup -- Marks/removes PCR introduced duplicate molecules based on the molecular tagging technology used in NuGEN's products.
+NuDup -- Marks/removes duplicate molecules based on the molecular tagging technology used in NuGEN products.
 =============================
 
 ![](http://nugendata.com/images/nugen_logo_noedge.png)  
 [www.nugen.com](http://www.nugen.com)
 
-Requirements
+System Requirements
 -----------------------------
 - samtools-0.1.18 or higher [samtools page](http://samtools.sourceforge.net/) Tested on 0.1.18
 - python2.7 [anaconda page](http://continuum.io/downloads) Tested on 2.7.7 
@@ -19,50 +19,62 @@ usage: nudup.py [-2] [-f INDEX.fq|READ.fq] [-o OUT_PREFIX] [-s START]
                 [-l LENGTH] [-v] [-h]
                 IN.sam|IN.bam
 
-Marks/removes PCR duplicates using the N6 sequence technology used in
-NuGEN's Ovation Target Enrichment libraries.
+Marks/removes PCR introduced duplicate molecules based on the molecular tagging
+technology used in NuGEN products.
 
-For single end reads, duplicates are marked if they fulfill the following
-criteria: a) start in the same location b) have the same orientation/strand
-c) have the same N6 sequence. The read with the highest mapping quality is kept
-as the non-duplicate read. For paired end reads, duplicates are marked if they
-fulfill the following criteria: a) start in the same location b) have the same
-template length c) have the same N6 sequence. The read pair with the highest
+For SINGLE END reads, duplicates are marked if they fulfill the following
+criteria: a) start at the same genomic coordinate b) have the same strand
+orientation c) have the same molecular tag sequence. The read with the
+highest mapping quality is kept as the non-duplicate read.
+
+For PAIRED END reads, duplicates are marked if they fulfill the following
+criteria: a) start at the same genomic coordinate b) have the same template
+length c) have the same molecular tag sequence. The read pair with the highest
 mapping quality is kept as the non-duplicate read.
 
-The runtime for marking and removal of duplicates depends on the format of the
-inputs. Here are the two cases for running this tool:
+Here are the two cases for running this tool:
 
-- Case 1 (faster runtime): User supplies pre-built SAM/BAM alignment file that
-  is sorted and has fixed length N6 sequence appended to the read name
-- Case 2 (slower runtime): User supplies SAM/BAM alignment file and FASTQ file
-  containing N6 sequence. SAM/BAM records do not have a N6 sequence, but the N6
-  sequence is a substring in the read or title of the FASTQ file. FASTQ read
-  names must be unique, and each SAM/BAM record must have corresponding read
-  name in the FASTQ file.
+- CASE 1 (Standard): User supplies two input files,
+ 1) SAM/BAM file that a) ends with .sam or .bam extension b) contains unique
+    alignments only
+ 2) FASTQ file (ie: the Index FASTQ) that contains the molecular tag sequence
+    for each read name in the corresponding SAM/BAM file as either a) the read
+    sequence or b) in the FASTQ entry header name. If the index FASTQ read
+    length is 6, 8, 12, 14, or 18nt long as expected for NuGEN products, the
+    molecular tag sequence to be extracted from the read according to -s and -l
+    parameters, otherwise the molecular tag will be extracted from the header
+    of the FASTQ entry.
+
+- CASE 2 (Runtime Optimized): User supplies only one input file,
+ 1) SAM/BAM file that a) ends with .sam or .bam extension b) contains unique
+    alignments only c) is sorted d) has a fixed length sequence containing the
+    molecular tag appended to each read name.
 
 Author: Anand Patel
 Contact: NuGEN Technologies Inc., techserv@nugen.com
 
 Input:
-  IN.sam|IN.bam         input sorted/unsorted SAM/BAM
+  IN.sam|IN.bam         input sorted/unsorted SAM/BAM containing only unique
+                        alignments (sorted required for case 2 detailed above)
 
 Options:
   -2, --paired-end      use paired end deduping with template. SAM/BAM
-                        alignment must contain paired end reads.
-  -f INDEX.fq|READ.fq   FASTQ file paired with input SAM/BAM (REQUIRED if
-                        SAM/BAM does not have N6 sequence appended to
-                        qname/read title)
+                        alignment must contain paired end reads. Degenerate
+                        read pairs (alignments for one read of pair) will be
+                        discarded.
+  -f INDEX.fq|READ.fq   FASTQ file containing the molecular tag sequence for
+                        each read name in the corresponding SAM/BAM file
+                        (required only for CASE 1 detailed above)
   -o OUT_PREFIX, --out OUT_PREFIX
                         prefix of output file paths for sorted BAMs (default
                         will create prefix.sorted.markdup.bam,
                         prefix.sorted.dedup.bam, prefix_dup_log.txt)
   -s START, --start START
-                        position in index read where N6 sequence begins. This
-                        should be a 1-based value that counts in from the END
-                        of the read. (default = 6)
+                        position in index read where molecular tag sequence
+                        begins. This should be a 1-based value that counts in
+                        from the 3' END of the read. (default = 6)
   -l LENGTH, --length LENGTH
-                        length of N6 sequence (default = 6)
+                        length of molecular tag sequence (default = 6)
   -v, --version         show program's version number and exit
   -h, --help            show this help message and exit
 ```
