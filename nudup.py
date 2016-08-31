@@ -1,25 +1,34 @@
 #!/usr/bin/env python
-"""Marks/removes PCR duplicates using the N6 sequence technology used in
-NuGEN's Ovation Target Enrichment libraries.
+"""Marks/removes PCR introduced duplicate molecules based on the molecular tagging
+technology used in NuGEN products.
 
-For single end reads, duplicates are marked if they fulfill the following
-criteria: a) start in the same location b) have the same orientation/strand 
-c) have the same N6 sequence. The read with the highest mapping quality is kept 
-as the non-duplicate read. For paired end reads, duplicates are marked if they
-fulfill the following criteria: a) start in the same location b) have the same
-template length c) have the same N6 sequence. The read pair with the highest
+For SINGLE END reads, duplicates are marked if they fulfill the following
+criteria: a) start at the same genomic coordinate b) have the same strand
+orientation c) have the same molecular tag sequence. The read with the
+highest mapping quality is kept as the non-duplicate read.
+
+For PAIRED END reads, duplicates are marked if they fulfill the following
+criteria: a) start at the same genomic coordinate b) have the same template
+length c) have the same molecular tag sequence. The read pair with the highest
 mapping quality is kept as the non-duplicate read.
 
-The runtime for marking and removal of duplicates depends on the format of the
-inputs. Here are the two cases for running this tool:
+Here are the two cases for running this tool:
 
-- Case 1 (faster runtime): User supplies pre-built SAM/BAM alignment file that
-  is sorted and has fixed length N6 sequence appended to the read name
-- Case 2 (slower runtime): User supplies SAM/BAM alignment file and FASTQ file
-  containing N6 sequence. SAM/BAM records do not have a N6 sequence, but the N6
-  sequence is a substring in the read or title of the FASTQ file. FASTQ read
-  names must be unique, and each SAM/BAM record must have corresponding read 
-  name in the FASTQ file.
+- CASE 1 (Standard): User supplies two input files,
+ 1) SAM/BAM file that a) ends with .sam or .bam extension b) contains unique
+    alignments only
+ 2) FASTQ file (ie: the Index FASTQ) that contains the molecular tag sequence
+    for each read name in the corresponding SAM/BAM file as either a) the read
+    sequence or b) in the FASTQ entry header name. If the index FASTQ read
+    length is 6, 8, 12, 14, or 18nt long as expected for NuGEN products, the
+    molecular tag sequence to be extracted from the read according to -s and -l
+    parameters, otherwise the molecular tag will be extracted from the header
+    of the FASTQ entry.
+
+- CASE 2 (Runtime Optimized): User supplies only one input file,
+ 1) SAM/BAM file that a) ends with .sam or .bam extension b) contains unique
+    alignments only c) is sorted d) has a fixed length sequence containing the
+    molecular tag appended to each read name.
 
 Author: {author}
 Contact: {company}, {email}
@@ -298,7 +307,7 @@ class UMISeq(object):
 		try:
 			return sam_row[0][-self.length:]  
 		except TypeError, IndexError:
-			raise Exception('Need to set umi length, to get umi from read name suffix')
+			raise Exception('Need to set molecular tag sequence length, to get umi from read name suffix')
 
 class ValidUMISeq(UMISeq):
 	def __init__(self, length):
@@ -309,15 +318,15 @@ class ValidUMISeq(UMISeq):
 		try:
 			umi_seq = sam_row[0][-self.length:]  
 		except TypeError, IndexError:
-			raise Exception('Need to set N6 length, to get N6 from read name suffix')
+			raise Exception('Need to set molecular tag sequence length, to get molecular tag sequence from read name suffix')
 
 		# Validates the UMI code matches a string of fixed umi length
 		try:
 			if not self.umi_re.match(umi_seq):
-				raise AssertionError('N6 sequence, {0} does not match IUPAC format. Is N6 in SAM qname?'.format(umi_seq))
+				raise AssertionError('molecular tag sequence, {0} does not match IUPAC format. Is molecular tag sequence in SAM read name?'.format(umi_seq))
 		except AttributeError:
 			# If no umi pattern is compiled, then sets adn returns the new umi_seq
-			logger.debug("Setting N6 pattern for validation")
+			logger.debug("Setting molecular tag sequence pattern for validation")
 			self.umi_re = re.compile('^[%s]{%d}$'%(IUPAC,self.length))
 			return self.get_umi_seq(sam_row)
 				
@@ -640,7 +649,7 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 		if len(is_reverse_read_a_dup)>0:
 			logger.error('There are %d reverse end reads, that were not caught and set properly.', len(is_reverse_read_a_dup))
 		for k,v in is_reverse_read_a_dup.iteritems():
-			logger.error('QNAME: %s IsDup: %d', k,v)
+			logger.error('READ NAME: %s IsDup: %d', k,v)
 		self._writer.close()
 	
 class IndexFinder(object):
@@ -725,13 +734,13 @@ class IndexFinder(object):
 
 	def get_cmds_for_parsing_fastq(self):
 		if self.is_index_fastq():
-			logger.info('Using N6 from Index FASTQ sequence')
+			logger.info('Using molecular tag sequence from Index FASTQ read')
 			return self._get_index_cmds()
 		elif self.is_index_in_read_title():
-			logger.info('Using N6 from FASTQ Read Title')
+			logger.info('Using molecular tag sequence from FASTQ header name')
 			return self._get_read_title_cmds()
 		else:
-			logger.error('No Valid N6 information found in Read Title, please provide a valid Index FASTQ file')
+			logger.error('No Valid molecular tag sequence information found in FASTQ header name, please provide a valid Index FASTQ file')
 			sys.exit(1)
 
 class PrepDeDup(object):
@@ -775,9 +784,9 @@ class PrepDeDup(object):
 	def process_unsynced_sam(self, umi_start, umi_length):
 		""" Processing sam that is not synced. Also performs Sanity Checks on RNAME key"""
 		if umi_length is None:
-			raise Exception('Requires a UMI length')
+			raise Exception('Requires a molecular tag sequence length')
 		if umi_start is None:
-			raise Exception('Requires a UMI start')
+			raise Exception('Requires a molecular tag sequence start')
 		if self._index is None:
 			raise Exception('Requires an index FASTQ')
 
@@ -789,7 +798,7 @@ class PrepDeDup(object):
 			logger.error("Specified start {0:d} is before the length of Index sequence {1:d}".format(umi_start, self._index_parser.index_seq_length))
 			
 
-		logger.info("Appending N6 sequence to SAM/BAM qname")
+		logger.info("Appending molecular tag sequence to SAM/BAM read name")
 		w = self.DupMain(self._out_prefix, Writer=UMIStripWriter)
 		w.set_umi_length(umi_length)
 
@@ -816,7 +825,7 @@ class PrepDeDup(object):
 			logger.debug(uniq_to_sam_cmd)
 			sam_uniq_out = sp.check_output(shlex.split(uniq_to_sam_cmd))	
 			if len(sam_uniq_out.strip())>0:
-				logger.error("SAM QNAMEs did not match QNAMEs in Index\n %s", sam_uniq_out[:1024])
+				logger.error("SAM read names did not match read names in Index\n %s", sam_uniq_out[:1024])
 				raise Exception('SAM and Index do not match check failed')
 
 			# A little not obvious. Requires thinking of a pipe, backwards
@@ -852,7 +861,7 @@ class PrepDeDup(object):
 						join_cmd = "join -t '	' -j 1 {fq} {sam}".format(fq=fq_path.name, sam=sam_path.name)
 						add_umi_cmd = r"sed -e 's/^\([^\t]\+\)\t\([^\t]\+\)/\1:\2/'"	
 						with SubprocessChain([join_cmd, add_umi_cmd], umi_join_path) as umi_nohead_sam:
-							logger.debug('Add N6 to sam: %s', umi_nohead_sam)
+							logger.debug('Add molecular tag sequence to sam: %s', umi_nohead_sam)
 			#raw_input('continue? [enter] \n')
 			self._sam = sorted_umi_sam.name
 			self.process_sorted_sam_with_umi_in_rname(umi_length, dup_obj=w)
@@ -863,13 +872,13 @@ class PrepDeDup(object):
 	def process_sorted_sam_with_umi_in_rname(self, umi_length, dup_obj=None):
 		""" Processes a SAM/BAM file with the a fixed length UMI sequence appended to read name """
 		if umi_length is None:
-			raise Exception('Requires a N6 length')
+			raise Exception('Requires a molecular tag sequence length')
 		if dup_obj is None:
 			w = self.DupMain(self._out_prefix)
 			w.set_umi_length(umi_length, validator=True)
 		else:
 			w = dup_obj
-		logger.info("Processing sorted SAM/BAM with N6 sequence in qname (assumes sorted)")
+		logger.info("Processing sorted SAM/BAM with molecular tag sequence in read name (assumes sorted)")
 		if self.is_bam():
 			tosam_cmd = 'samtools view -h {bam}'.format(bam=self._sam)  
 			logger.debug(tosam_cmd)
@@ -898,20 +907,20 @@ class PrepDeDup(object):
 			d_rate = dup_obj.umi_dup_count/float(dup_obj.aligned_count)
 		except ZeroDivisionError:
 			d_rate = 0
-		logger.info('        Aligned count: {0: 13d}'.format(dup_obj.aligned_count))
-		logger.info('      Unaligned count: {0: 13d}'.format(dup_obj.unaligned_count))
-		logger.debug('Positional dups count: {0: 13d} ({1:0.4f} rate)'.format(dup_obj.dup_count,p_rate))
-		logger.info('        N6 dups count: {0: 13d} ({1:0.4f} rate)'.format(dup_obj.umi_dup_count, d_rate))
+		logger.info( '           Aligned count: {0: 13d}'.format(dup_obj.aligned_count))
+		logger.info( '         Unaligned count: {0: 13d}'.format(dup_obj.unaligned_count))
+		logger.debug('   Positional dups count: {0: 13d} ({1:0.4f} rate)'.format(dup_obj.dup_count,p_rate))
+		logger.info( 'Molecular tag dups count: {0: 13d} ({1:0.4f} rate)'.format(dup_obj.umi_dup_count, d_rate))
 		logger.info('Deduplication success.')
 		with open(self._out_prefix+"_dup_log.txt", 'wb') as f:
-			f.write('\t'.join(['aligned_count','unaligned_count','position_dup_count','frac_position_dup','n6_dup_count','frac_n6_dup'])+'\n')
+			f.write('\t'.join(['aligned_count','unaligned_count','position_dup_count','frac_position_dup','moltag_dup_count','frac_moltag_dup'])+'\n')
 			metrics = [dup_obj.aligned_count, dup_obj.unaligned_count, dup_obj.dup_count, p_rate, dup_obj.umi_dup_count, d_rate]
 			f.write('\t'.join(['{0:d}','{1:d}','{2:d}','{3:0.4f}','{4:d}','{5:0.4f}']).format(*metrics)+'\n')
 		
 	
 	def main(self,umi_start=None,umi_length=None):
 		""" Checks/validates the inputs and identifies a pipeline to use for marking and removal of duplicates """
-		logger.info('Deduplicating NuGEN Ovation Target Enrichment {0} end reads...'.format(self.type_str))
+		logger.info('Deduplicating NuGEN {0} end reads...'.format(self.type_str))
 		if self._index is None:
 			w = self.process_sorted_sam_with_umi_in_rname(umi_length)
 		else:
@@ -976,14 +985,14 @@ if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description=__doc__.format(author=__author__, company=__company__, email=__email__), formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
 		
 	pgroup = parser.add_argument_group("Input")
-	pgroup.add_argument('sam', metavar='IN.sam|IN.bam', type=lambda x:file_check(parser, x), help='input sorted/unsorted SAM/BAM')
+	pgroup.add_argument('sam', metavar='IN.sam|IN.bam', type=lambda x:file_check(parser, x), help='input sorted/unsorted SAM/BAM containing only unique alignments (sorted required for case 2 detailed above)')
 
 	ogroup = parser.add_argument_group("Options")
-	ogroup.add_argument('-2','--paired-end', dest='pe', action='count', default=0, help="use paired end deduping with template. SAM/BAM alignment must contain paired end reads.")
-	ogroup.add_argument('-f', dest='fq', metavar='INDEX.fq|READ.fq', type=lambda x:file_check(parser, x), default=None, help='FASTQ file paired with input SAM/BAM (REQUIRED if SAM/BAM does not have N6 sequence appended to qname/read title)')
+	ogroup.add_argument('-2','--paired-end', dest='pe', action='count', default=0, help="use paired end deduping with template. SAM/BAM alignment must contain paired end reads. Degenerate read pairs (alignments for one read of pair) will be discarded.")
+	ogroup.add_argument('-f', dest='fq', metavar='INDEX.fq|READ.fq', type=lambda x:file_check(parser, x), default=None, help='FASTQ file containing the molecular tag sequence for each read name in the corresponding SAM/BAM file (required only for CASE 1 detailed above)')
 	ogroup.add_argument('-o','--out', dest='out_prefix', default='prefix', help='prefix of output file paths for sorted BAMs (default will create prefix.sorted.markdup.bam, prefix.sorted.dedup.bam, prefix_dup_log.txt)')
-	ogroup.add_argument('-s','--start', dest='start', type=int, default=6, help="position in index read where N6 sequence begins. This should be a 1-based value that counts in from the END of the read. (default = 6)")
-	ogroup.add_argument('-l','--length', dest='length', type=int, default=6, help="length of N6 sequence (default = 6)")
+	ogroup.add_argument('-s','--start', dest='start', type=int, default=6, help="position in index read where molecular tag sequence begins. This should be a 1-based value that counts in from the 3' END of the read. (default = 6)")
+	ogroup.add_argument('-l','--length', dest='length', type=int, default=6, help="length of molecular tag sequence (default = 6)")
 	ogroup.add_argument('--debug', dest='debug', action='store_true', default=False, help=argparse.SUPPRESS)
 	#ogroup.add_argument('-l', help="log file to write statistics to (optional)")
 	ogroup.add_argument('-v','--version', action='version', version='%(prog)s '+ __version__)
@@ -997,7 +1006,7 @@ if __name__ == '__main__':
 		logger.setLevel(logging.INFO)	
 
 	if args.length>args.start:
-		parser.error("Invalid N6 subsequence: The start position {0} counting from the end is less than the length {1}".format(args.start, args.length))
+		parser.error("Invalid molecular tag subsequence: The start position {0} counting from the end is less than the length {1}".format(args.start, args.length))
 
 	if args.pe > 0:
 		w = PrepDeDupPairedEnd(args.sam, fq_file=args.fq, out_prefix=args.out_prefix)
