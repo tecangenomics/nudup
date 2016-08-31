@@ -1,6 +1,3 @@
-NuDup -- Marks/removes duplicate molecules based on the molecular tagging technology used in NuGEN products.
-=============================
-
 ![](http://nugendata.com/images/nugen_logo_noedge.png)  
 [www.nugen.com](http://www.nugen.com)
 
