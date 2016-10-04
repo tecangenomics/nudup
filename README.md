@@ -3,7 +3,7 @@
 
 System Requirements
 -----------------------------
-- samtools-0.1.18 or higher [samtools page](http://samtools.sourceforge.net/) Tested on 0.1.18
+- samtools-0.1.18 or 0.1.19 required [samtools page](https://sourceforge.net/projects/samtools/files/samtools/0.1.18/) Tested on 0.1.18
 - python2.7 [anaconda page](http://continuum.io/downloads) Tested on 2.7.7 
 - GNU-coreutils gzip,sed,cut,grep etc. Standard on Ubuntu 12.04+.
 
