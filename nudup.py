@@ -70,7 +70,6 @@ IUPAC = 'ATCGRYMKSWHBVDN'
 ALLOWED_FASTQ = ['.fq','.fastq.gz']
 
 MAX_MEMORY = 4*(2**30) # in bytes
-DEFAULT_TMP="/tmp/nugen_" 
 
 logger = logging.getLogger('ote')
 
@@ -751,18 +750,23 @@ class PrepDeDup(object):
 	Creates BASH scripts, and runs them for sanity checks and processing files on the stream.	
 	"""
 
-	def __init__(self, sam_file, fq_file=None, out_prefix='', old_samtools=False):
+	def __init__(self, sam_file, tmp_prefix, fq_file=None, out_prefix='', old_samtools=False):
 		""" Init 
 
 		Arguments:
 		  sam_file -- absolute path to sam/bam sorted/unsorted file (str)
+		  tmp_prefix -- prefix for reading/writing temp files and named pipes (str)
 		  fq_file -- absolute path to fastq or gzipped fastq (str)
 		  out_prefix -- absolute prefix of path to write sorted BAM files to (str)
+		  old_samtools -- flag for using old samtools sort style (boolean)
 		"""
 		
 		self._sam = sam_file
+		self._tmp_prefix = tmp_prefix		
+
 		self._out_prefix = out_prefix
 
+		self._old_samtools = old_samtools
 		# Sets how to grab sam regardless of bam or sam files	
 		if self.is_bam():
 			self._nohead_sam_cmd = "samtools view {sam}".format(sam=self._sam)
@@ -778,7 +782,6 @@ class PrepDeDup(object):
 		self.DupMain = MarkRmDups
 		self.type_str = 'single'
 
-		self.old_samtools = old_samtools
 
 	def is_bam(self):
 		return self._sam[-4:]=='.bam'
@@ -804,7 +807,7 @@ class PrepDeDup(object):
 		w = self.DupMain(self._out_prefix, Writer=UMIStripWriter)
 		w.set_umi_length(umi_length)
 
-		with tempfile.NamedTemporaryFile(prefix=DEFAULT_TMP, suffix='_sorted.fq') as fq_path, tempfile.NamedTemporaryFile(prefix=DEFAULT_TMP, suffix='_sorted.sam') as sam_path, tempfile.NamedTemporaryFile(prefix=DEFAULT_TMP, suffix='_umi_sorted.bam') as sorted_umi_sam:
+		with tempfile.NamedTemporaryFile(prefix=self._tmp_prefix, suffix='_sorted.fq') as fq_path, tempfile.NamedTemporaryFile(prefix=self._tmp_prefix, suffix='_sorted.sam') as sam_path, tempfile.NamedTemporaryFile(prefix=self._tmp_prefix, suffix='_umi_sorted.bam') as sorted_umi_sam:
 
 			sort_by_name = 'sort -k 1b,1 -S {mem}b'.format(mem=MAX_MEMORY/2)
 			# Parse FQ and SAM, add UMI, sort by name
@@ -834,14 +837,14 @@ class PrepDeDup(object):
 			# Define the reader, before you start writing.
 
 			# Declare all the pipes we will use first
-			with make_named_pipe(prefix=DEFAULT_TMP) as umi_sam_path, make_named_pipe(prefix=DEFAULT_TMP) as sam_head_path, make_named_pipe(prefix=DEFAULT_TMP) as umi_join_path:
+			with make_named_pipe(prefix=self._tmp_prefix) as umi_sam_path, make_named_pipe(prefix=self._tmp_prefix) as sam_head_path, make_named_pipe(prefix=self._tmp_prefix) as umi_join_path:
 	
 				# SAMwUMIwHead --> BAMwUMI --> Sorted BAMwUMI --> Sorted SAMwUMIwHead
 				samtobam = 'samtools view -bhS {sam}'.format(sam=umi_sam_path)
-				if self.old_samtools:
+				if self._old_samtools:
 					sort_bam_cmd = 'samtools sort -m {mem} - {{out}}'.format(mem=MAX_MEMORY)
 				else:			
-					sort_bam_cmd = 'samtools sort -m {mem} -T {prefix} -o {{out}}.bam'.format(prefix=DEFAULT_TMP+'sort', mem=MAX_MEMORY)
+					sort_bam_cmd = 'samtools sort -m {mem} -T {prefix} -o {{out}}.bam'.format(prefix=self._tmp_prefix+'sort', mem=MAX_MEMORY)
 
 				#bamtosam = 'samtools view -h -'
 				#with SubprocessChain([samtobam, sort_bam_cmd, bamtosam], sorted_umi_sam.name, suppress_stderr=True) as sort_sam:
@@ -939,8 +942,8 @@ class PrepDeDupPairedEnd(PrepDeDup):
 	""" Treats Input SAM as containing Paired End data, and marks/removes potential PCR duplicate
 	  templates
 	"""
-	def __init__(self, sam_file, fq_file=None, out_prefix='', old_samtools=False):
-		PrepDeDup.__init__(self, sam_file, fq_file, out_prefix, old_samtools)
+	def __init__(self, sam_file, tmp_prefix, fq_file=None, out_prefix='', old_samtools=False):
+		PrepDeDup.__init__(self, sam_file, tmp_prefix, fq_file, out_prefix, old_samtools)
 
 		self.DupMain = MarkRmDupsPairedEnd
 		self.type_str = 'paired'
@@ -984,7 +987,7 @@ def file_check(parser, arg):
 	else:
 		return str(arg)
 
-def temp_dir_check(parser, arg):
+def tmp_dir_check(parser, arg):
 	if not os.path.isdir(arg):
 		parser.error("The argument {0} is not a directory!".format(arg))
 
@@ -992,7 +995,7 @@ def temp_dir_check(parser, arg):
 	try:
 		os.mkfifo(check_fpath)
 	except OSError:
-		parser.error("Must be able to make named pipes in temp directory. See `mkfifo --help` for named pipe info.") 
+		parser.error("Must be able to make named pipes in temp directory. See `man mkfifo` for named pipe info.") 
 		
 	finally:
 		if os.path.exists(check_fpath):
@@ -1004,7 +1007,7 @@ def temp_dir_check(parser, arg):
 
 if __name__ == '__main__':
 	import argparse, sys, logging
-	default_temp_dir = '/tmp'
+	default_tmp_dir = '/tmp'
 
 	parser = argparse.ArgumentParser(description=__doc__.format(author=__author__, company=__company__, email=__email__), formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
 		
@@ -1017,8 +1020,8 @@ if __name__ == '__main__':
 	ogroup.add_argument('-o','--out', dest='out_prefix', default='prefix', help='prefix of output file paths for sorted BAMs (default will create prefix.sorted.markdup.bam, prefix.sorted.dedup.bam, prefix_dup_log.txt)')
 	ogroup.add_argument('-s','--start', dest='start', type=int, default=6, help="position in index read where molecular tag sequence begins. This should be a 1-based value that counts in from the 3' END of the read. (default = 6)")
 	ogroup.add_argument('-l','--length', dest='length', type=int, default=6, help="length of molecular tag sequence (default = 6)")
-	ogroup.add_argument('-T', dest='temp_dir', metavar='TEMP_DIR', type=lambda x:temp_dir_check(parser, x), default=default_temp_dir, help='Directory for reading and writing to temp files and named pipes (default:{0})'.format(default_temp_dir))
-	ogroup.add_argument('--old-samtools', dest='old_samtools', action='store_true', default=False, help="Use for samtools sort command line compatibility for versions <=0.1.19")
+	ogroup.add_argument('-T', dest='tmp_prefix', metavar='TEMP_DIR', type=lambda x:tmp_dir_check(parser, x), default=default_tmp_dir, help='directory for reading and writing to temporary files and named pipes (default: {0})'.format(default_tmp_dir))
+	ogroup.add_argument('--old-samtools', dest='old_samtools', action='store_true', default=False, help="required for compatibility with samtools sort style in samtools versions <=0.1.19")
 	ogroup.add_argument('--debug', dest='debug', action='store_true', default=False, help=argparse.SUPPRESS)
 	#ogroup.add_argument('-l', help="log file to write statistics to (optional)")
 	ogroup.add_argument('-v','--version', action='version', version='%(prog)s '+ __version__)
@@ -1035,9 +1038,9 @@ if __name__ == '__main__':
 		parser.error("Invalid molecular tag subsequence: The start position {0} counting from the end is less than the length {1}".format(args.start, args.length))
 
 	if args.pe > 0:
-		w = PrepDeDupPairedEnd(args.sam, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
+		w = PrepDeDupPairedEnd(args.sam, args.tmp_prefix, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
 	else:
-		w = PrepDeDup(args.sam, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
+		w = PrepDeDup(args.sam, args.tmp_prefix, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
 
 	if args.debug:
 		w.main(umi_start=args.start, umi_length=args.length)
