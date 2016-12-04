@@ -85,6 +85,12 @@ class TestMarkRmDups(unittest.TestCase):
 
 		w = d.main(umi_start=6, umi_length=6)
 		self._check_for_multx(w)
+
+	def testOldSamtoolsDupUnsortedSamIndexInReadTitle(self):
+		d = PrepDeDup(self.sam_sorted, fq_file=self.read, out_prefix=self.out_prefix, old_samtools=True)
+
+		w = d.main(umi_start=6, umi_length=6)
+		self._check_for_multx(w)
 	
 def test_all():
 	
@@ -94,12 +100,13 @@ def test_all():
 
 def test():
 	suite = unittest.TestSuite()
-	suite.addTest(TestMarkRmDups('testDupUnsortedSamIndexInReadTitle'))
+	suite.addTest(TestMarkRmDups('testOldSamtoolsDupUnsortedSamIndexInReadTitle'))
+	#suite.addTest(TestMarkRmDups('testDupUnsortedSamIndexInReadTitle'))
 	#suite.addTest(TestMarkRmDups('testDupSmall'))
 	#suite.addTest(TestMarkRmDups('testDupSyncedBamFastq'))
 	unittest.TextTestRunner(verbosity=2).run(suite)
 
 
 if __name__=='__main__':
-	test_all() 
-	#test()
+	#test_all() 
+	test()

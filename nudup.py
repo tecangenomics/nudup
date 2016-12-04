@@ -49,7 +49,7 @@ import time
 __author__ = 'Anand Patel'
 __company__ = "NuGEN Technologies Inc."
 __email__ = "techserv@nugen.com"
-__version__ = '2.2'
+__version__ = '2.3'
 __copyright__ = """Copyright (C) 2015 NuGEN Technologies Inc.
    
     This program is free software: you can redistribute it and/or modify
@@ -751,7 +751,7 @@ class PrepDeDup(object):
 	Creates BASH scripts, and runs them for sanity checks and processing files on the stream.	
 	"""
 
-	def __init__(self, sam_file, fq_file=None, out_prefix=''):
+	def __init__(self, sam_file, fq_file=None, out_prefix='', old_samtools=False):
 		""" Init 
 
 		Arguments:
@@ -777,6 +777,8 @@ class PrepDeDup(object):
 		self._umi_from_fq_fmt = r"""awk '{{print $1 "\t" substr($2,length($2)-{s:d}+1,{l:d});}}'"""
 		self.DupMain = MarkRmDups
 		self.type_str = 'single'
+
+		self.old_samtools = old_samtools
 
 	def is_bam(self):
 		return self._sam[-4:]=='.bam'
@@ -836,8 +838,11 @@ class PrepDeDup(object):
 	
 				# SAMwUMIwHead --> BAMwUMI --> Sorted BAMwUMI --> Sorted SAMwUMIwHead
 				samtobam = 'samtools view -bhS {sam}'.format(sam=umi_sam_path)
-				#sort_bam_cmd = 'samtools sort -o -m {mem} - -'.format(mem=MAX_MEMORY)
-				sort_bam_cmd = 'samtools sort -m {mem} - {{out}}'.format(mem=MAX_MEMORY)
+				if self.old_samtools:
+					sort_bam_cmd = 'samtools sort -m {mem} - {{out}}'.format(mem=MAX_MEMORY)
+				else:			
+					sort_bam_cmd = 'samtools sort -m {mem} -T {prefix} -o {{out}}.bam'.format(prefix=DEFAULT_TMP+'sort', mem=MAX_MEMORY)
+
 				#bamtosam = 'samtools view -h -'
 				#with SubprocessChain([samtobam, sort_bam_cmd, bamtosam], sorted_umi_sam.name, suppress_stderr=True) as sort_sam:
 				with SubprocessChain([samtobam, sort_bam_cmd], sorted_umi_sam.name[:-4], suppress_stderr=True) as sort_sam:
@@ -934,8 +939,8 @@ class PrepDeDupPairedEnd(PrepDeDup):
 	""" Treats Input SAM as containing Paired End data, and marks/removes potential PCR duplicate
 	  templates
 	"""
-	def __init__(self, sam_file, fq_file=None, out_prefix=''):
-		PrepDeDup.__init__(self, sam_file, fq_file, out_prefix)
+	def __init__(self, sam_file, fq_file=None, out_prefix='', old_samtools=False):
+		PrepDeDup.__init__(self, sam_file, fq_file, out_prefix, old_samtools)
 
 		self.DupMain = MarkRmDupsPairedEnd
 		self.type_str = 'paired'
@@ -979,8 +984,27 @@ def file_check(parser, arg):
 	else:
 		return str(arg)
 
+def temp_dir_check(parser, arg):
+	if not os.path.isdir(arg):
+		parser.error("The argument {0} is not a directory!".format(arg))
+
+	check_fpath = os.path.join(arg, 'named_pipe')
+	try:
+		os.mkfifo(check_fpath)
+	except OSError:
+		parser.error("Must be able to make named pipes in temp directory. See `mkfifo --help` for named pipe info.") 
+		
+	finally:
+		if os.path.exists(check_fpath):
+			os.unlink(check_fpath)
+
+	return os.path.join(str(arg), 'nudup_')
+	
+
+
 if __name__ == '__main__':
 	import argparse, sys, logging
+	default_temp_dir = '/tmp'
 
 	parser = argparse.ArgumentParser(description=__doc__.format(author=__author__, company=__company__, email=__email__), formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
 		
@@ -993,6 +1017,8 @@ if __name__ == '__main__':
 	ogroup.add_argument('-o','--out', dest='out_prefix', default='prefix', help='prefix of output file paths for sorted BAMs (default will create prefix.sorted.markdup.bam, prefix.sorted.dedup.bam, prefix_dup_log.txt)')
 	ogroup.add_argument('-s','--start', dest='start', type=int, default=6, help="position in index read where molecular tag sequence begins. This should be a 1-based value that counts in from the 3' END of the read. (default = 6)")
 	ogroup.add_argument('-l','--length', dest='length', type=int, default=6, help="length of molecular tag sequence (default = 6)")
+	ogroup.add_argument('-T', dest='temp_dir', metavar='TEMP_DIR', type=lambda x:temp_dir_check(parser, x), default=default_temp_dir, help='Directory for reading and writing to temp files and named pipes (default:{0})'.format(default_temp_dir))
+	ogroup.add_argument('--old-samtools', dest='old_samtools', action='store_true', default=False, help="Use for samtools sort command line compatibility for versions <=0.1.19")
 	ogroup.add_argument('--debug', dest='debug', action='store_true', default=False, help=argparse.SUPPRESS)
 	#ogroup.add_argument('-l', help="log file to write statistics to (optional)")
 	ogroup.add_argument('-v','--version', action='version', version='%(prog)s '+ __version__)
@@ -1009,9 +1035,9 @@ if __name__ == '__main__':
 		parser.error("Invalid molecular tag subsequence: The start position {0} counting from the end is less than the length {1}".format(args.start, args.length))
 
 	if args.pe > 0:
-		w = PrepDeDupPairedEnd(args.sam, fq_file=args.fq, out_prefix=args.out_prefix)
+		w = PrepDeDupPairedEnd(args.sam, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
 	else:
-		w = PrepDeDup(args.sam, fq_file=args.fq, out_prefix=args.out_prefix)
+		w = PrepDeDup(args.sam, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
 
 	if args.debug:
 		w.main(umi_start=args.start, umi_length=args.length)
