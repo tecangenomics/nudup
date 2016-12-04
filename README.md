@@ -1,6 +1,8 @@
 ![](http://nugendata.com/images/nugen_logo_noedge.png)  
 [www.nugen.com](http://www.nugen.com)
 
+[![bioconda-badge](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat-square)](http://bioconda.github.io)
+
 System Requirements
 -----------------------------
 - samtools-0.1.18 or 0.1.19 required [samtools page](https://sourceforge.net/projects/samtools/files/samtools/0.1.18/) Tested on 0.1.18
