@@ -251,52 +251,112 @@ class FQFilePath(object):
 			with open(self.fq, 'rb') as f:
 				lines = islice(f, 0,n)
 		return lines
-class DefaultWriter(object):
-	""" By Default writes markdup and rmdup files using samtools view converter """
-	def __init__(self, parent, markdup_path, rmdup_path):
-		self.parent = parent
+
+class UMIStripFunc(object):
+	def __init__(self, parent):
+		self._umi_trim_length = -(parent._umi.length+1)
+	def __call__(self, sam_row):
+		if not sam_row[0].startswith('@'):
+			sam_row[0] = sam_row[0][:self._umi_trim_length]
+		return sam_row
+
+class AbstractWriter(object):
+	""" Abstract writer for sam tokens (reads) to sam files 
+	
+		sam_row_func - performs a manipulation on sam rows
+	"""
+	def __init__(self, sam_row_func=None):
+		self._func = sam_row_func
 		self._fnull = open(os.devnull, 'wb')
-		self.markdup_path = markdup_path
+
+	def _get_sam_str(self, sam_row):
+		if self._func is None:
+			return '\t'.join(sam_row)
+		else:
+			return '\t'.join(self._func(sam_row))
+
+	def write(self, sam_row, to_rm_flag=True):
+		raise NotImplementedError()
+
+	def close(self):
+		self._fnull.close()
+	
+
+class RmdupWriter(AbstractWriter):
+	""" By Default writes markdup and rmdup files using samtools view converter """
+	def __init__(self, rmdup_path, sam_row_func=None):
+		AbstractWriter.__init__(self,sam_row_func)
+		
 		self.rmdup_path = rmdup_path
 		#self._fnull = None
 		# open pipes to send data to 
 		samtobam_fmt = 'samtools view -bS -o {out_bam} -'
-		tomark_cmd =samtobam_fmt.format(out_bam=markdup_path) 
-		logger.debug(tomark_cmd)
-		self._tomark = sp.Popen(shlex.split(tomark_cmd), stdin=sp.PIPE, stderr=self._fnull)
-
+		
 		torm_cmd =samtobam_fmt.format(out_bam=rmdup_path) 
 		logger.debug(torm_cmd)
 		self._torm = sp.Popen(shlex.split(torm_cmd), stdin=sp.PIPE, stderr=self._fnull)
-	def write(self, sam_row, to_rm_flag=True):
-		""" Writes toRM and toMark open processes """
-		sam_str = '\t'.join(sam_row)
+	
+	def _write_str(self, sam_str, to_rm_flag=True):
+		""" Writes toRM open processes """
 		if to_rm_flag:
 			self._torm.stdin.write(sam_str)
+
+	def write(self, sam_row, to_rm_flag=True):
+		""" Writes toRM open processes """
+		if to_rm_flag:
+			sam_str = self._get_sam_str(sam_row)
+			self._torm.stdin.write(self._get_sam_str(sam_row))
+	def close(self):
+		""" Flushes all input to subprocess and waits """
+		self._torm.stdin.close()
+		self._torm.wait()
+		AbstractWriter.close(self)
+
+
+class MarkdupWriter(AbstractWriter):
+	""" Writes markdup file using samtools view converter """
+	def __init__(self, markdup_path, sam_row_func=None):
+		AbstractWriter.__init__(self,sam_row_func)
+		self.markdup_path = markdup_path
+		
+		# open pipes to send data to 
+		samtobam_fmt = 'samtools view -bS -o {out_bam} -'
+		
+		tomark_cmd =samtobam_fmt.format(out_bam=markdup_path) 
+		logger.debug(tomark_cmd)
+		self._tomark = sp.Popen(shlex.split(tomark_cmd), stdin=sp.PIPE, stderr=self._fnull)
+	
+	def _write_str(self, sam_str, to_rm_flag=True):
+		""" Writes toMark open processes """
 		self._tomark.stdin.write(sam_str)
-	def flush(self):
+
+	def write(self, sam_row, to_rm_flag=True):
+		""" Writes toMark open processes """
+		self._tomark.stdin.write(self._get_sam_str(sam_row))
+
+	def close(self):
 		""" Flushes all input to subprocess and waits """
 		self._tomark.stdin.close()
-		self._torm.stdin.close()
-		
 		self._tomark.wait()
-		self._torm.wait()
-	def close(self):
-		self.flush()
-		self._fnull.close()	
+		AbstractWriter.close(self)
 
-class UMIStripWriter(DefaultWriter):
-	def __init__(self, parent, markdup_path, rmdup_path):
-		DefaultWriter.__init__(self,parent, markdup_path, rmdup_path)
-	def write(self, sam_row, to_rm_flag=True):	
-		""" Writes toRM and toMark open processes, strips UMI from the header """
-		if not sam_row[0].startswith('@'):
-			# strip umi_length + 1 character from the end of a header
-			sam_row[0] = sam_row[0][:-(self.parent._umi.length+1)]
-		sam_str = '\t'.join(sam_row)
-		if to_rm_flag:
-			self._torm.stdin.write(sam_str)
-		self._tomark.stdin.write(sam_str)		
+class RmdupMarkdupWriter(AbstractWriter):
+	""" Delegates write functions to MarkdupWriter and RmdupWriter """
+	def __init__(self, rmdup_path, markdup_path, sam_row_func=None):
+		AbstractWriter.__init__(self, sam_row_func)
+		self._torm_writer = RmdupWriter(rmdup_path)
+		self._tomark_writer = MarkdupWriter(markdup_path)
+
+	def write(self, sam_row, to_rm_flag=True):
+		""" Writes to both rmdup and markdup files """
+		sam_str = self._get_sam_str(sam_row)
+		self._torm_writer._write_str(sam_str, to_rm_flag)
+		self._tomark_writer._write_str(sam_str, to_rm_flag)
+
+	def close(self):
+		self._torm_writer.close()
+		self._tomark_writer.close()
+		AbstractWriter.close(self)
 
 class UMISeq(object):
 	""" Extracts UMI sequence from SAM row."""
@@ -337,7 +397,7 @@ class MarkRmDups(object):
 	The input must be a sorted SAM file where each read has the last UMI_LENGTH letters representing a unique molecular identifier. A PCR duplicate is a read, which maps to the same contig, positions, orientation, and has the same molecular identifier as another read with greater MAPQ score.  
 	"""
 
-	def __init__(self, out_prefix, Writer=None):
+	def __init__(self, out_prefix):
 		self._out_mark_suffix = '.sorted.markdup.bam'
 		self._out_rm_suffix = '.sorted.dedup.bam'
 		self._out_prefix = os.path.normpath(out_prefix)
@@ -348,21 +408,17 @@ class MarkRmDups(object):
 		self.dup_count = None
 			
 		self._umi = None
-		self._Writer = Writer
 		self._writer = None
 
 		if os.sep in self._out_prefix and not os.path.isdir(os.path.dirname(self._out_prefix)):
 			raise IOError('directory path not found %s'%self._out_prefix)
-	def set_writer(self):
+
+	def set_writer(self, writer):
 		""" Sets the writer after allowing modifications to output paths """
 		if not self._writer is None:
+			raise RuntimeError("Setting writer multiple times")
 			return
-
-		if self._Writer is None:
-			self._writer = DefaultWriter(self, self.get_markdup_path(), self.get_rmdup_path())
-		else:
-			self._writer = self._Writer(self, self.get_markdup_path(), self.get_rmdup_path())
-
+		self._writer = writer
 
 	def set_umi_length(self, length=6, validator=False):
 		if validator:
@@ -466,7 +522,7 @@ class MarkRmDups(object):
 
 	def mark_from_sorted_sam_with_umi_in_header(self, sorted_sam_fh):
 		""" Marks UMI duplicates in one bam, and Removes UMI duplicates in another bam """
-		self.set_writer()
+		#self.set_writer()
 		self.umi_dup_count = 0
 		self.dup_count = 0
 		
@@ -506,8 +562,8 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 	The input must be a sorted SAM file where each read has the last UMI_LENGTH letters representing a unique molecular identifier. A PCR duplicate is a read, which maps to the same contig, positions, orientation, and has the same molecular identifier as another read with greater MAPQ score.  
 	"""
 
-	def __init__(self, out_prefix, Writer=None):
-		MarkRmDups.__init__(self, out_prefix, Writer=Writer)
+	def __init__(self, out_prefix):
+		MarkRmDups.__init__(self, out_prefix)
 		
 	def _iter_grp_and_post(self, grp, pgrp):
 		if len(grp) > 0:
@@ -607,7 +663,7 @@ class MarkRmDupsPairedEnd(MarkRmDups):
 			Since paired end, the last segment in template read must be marked or removed depending on
 			the grouping of the first properly mapped read.
 		"""
-		self.set_writer()
+		#self.set_writer()
 		self.umi_dup_count = 0
 		self.dup_count = 0
 	
@@ -750,7 +806,7 @@ class PrepDeDup(object):
 	Creates BASH scripts, and runs them for sanity checks and processing files on the stream.	
 	"""
 
-	def __init__(self, sam_file, tmp_prefix, fq_file=None, out_prefix='', old_samtools=False):
+	def __init__(self, sam_file, tmp_prefix, fq_file=None, out_prefix='', old_samtools=False, rmdup_only=False):
 		""" Init 
 
 		Arguments:
@@ -759,6 +815,7 @@ class PrepDeDup(object):
 		  fq_file -- absolute path to fastq or gzipped fastq (str)
 		  out_prefix -- absolute prefix of path to write sorted BAM files to (str)
 		  old_samtools -- flag for using old samtools sort style (boolean)
+		  rmdup_only -- only reports a sam file without duplicated reads (boolean)
 		"""
 		
 		self._sam = sam_file
@@ -767,6 +824,8 @@ class PrepDeDup(object):
 		self._out_prefix = out_prefix
 
 		self._old_samtools = old_samtools
+		self._rmdup_only = rmdup_only
+
 		# Sets how to grab sam regardless of bam or sam files	
 		if self.is_bam():
 			self._nohead_sam_cmd = "samtools view {sam}".format(sam=self._sam)
@@ -786,6 +845,13 @@ class PrepDeDup(object):
 	def is_bam(self):
 		return self._sam[-4:]=='.bam'
 
+	def _set_dup_writer(self, w, sam_row_func=None):
+		""" Factory method for Writer """
+		if self._rmdup_only:
+			w.set_writer(RmdupWriter(w.get_rmdup_path(), sam_row_func))
+		else:
+			w.set_writer(RmdupMarkdupWriter(w.get_rmdup_path(), w.get_markdup_path(), sam_row_func))
+		
 	def process_unsynced_sam(self, umi_start, umi_length):
 		""" Processing sam that is not synced. Also performs Sanity Checks on RNAME key"""
 		if umi_length is None:
@@ -804,8 +870,9 @@ class PrepDeDup(object):
 			
 
 		logger.info("Appending molecular tag sequence to SAM/BAM read name")
-		w = self.DupMain(self._out_prefix, Writer=UMIStripWriter)
+		w = self.DupMain(self._out_prefix)
 		w.set_umi_length(umi_length)
+		self._set_dup_writer(w, UMIStripFunc(w))
 
 		with tempfile.NamedTemporaryFile(prefix=self._tmp_prefix, suffix='_sorted.fq') as fq_path, tempfile.NamedTemporaryFile(prefix=self._tmp_prefix, suffix='_sorted.sam') as sam_path, tempfile.NamedTemporaryFile(prefix=self._tmp_prefix, suffix='_umi_sorted.bam') as sorted_umi_sam:
 
@@ -884,6 +951,7 @@ class PrepDeDup(object):
 		if dup_obj is None:
 			w = self.DupMain(self._out_prefix)
 			w.set_umi_length(umi_length, validator=True)
+			self._set_dup_writer(w)
 		else:
 			w = dup_obj
 		logger.info("Processing sorted SAM/BAM with molecular tag sequence in read name (assumes sorted)")
@@ -934,8 +1002,8 @@ class PrepDeDup(object):
 		else:
 			w = self.process_unsynced_sam(umi_start, umi_length)	
 		self._log_output(w)
-		logger.info('Created output file {0} with duplicates marked'.format(w._writer.markdup_path))	
-		logger.info('Created output file {0} with duplicates removed'.format(w._writer.rmdup_path))	
+		logger.info('Created output file {0} with duplicates marked'.format(w.get_markdup_path()))	
+		logger.info('Created output file {0} with duplicates removed'.format(w.get_rmdup_path()))	
 		return w
 
 class PrepDeDupPairedEnd(PrepDeDup):
@@ -1022,6 +1090,7 @@ if __name__ == '__main__':
 	ogroup.add_argument('-l','--length', dest='length', type=int, default=6, help="length of molecular tag sequence (default = 6)")
 	ogroup.add_argument('-T', dest='tmp_prefix', metavar='TEMP_DIR', type=lambda x:tmp_dir_check(parser, x), default=default_tmp_dir, help='directory for reading and writing to temporary files and named pipes (default: {0})'.format(default_tmp_dir))
 	ogroup.add_argument('--old-samtools', dest='old_samtools', action='store_true', default=False, help="required for compatibility with samtools sort style in samtools versions <=0.1.19")
+	ogroup.add_argument('--rmdup-only', dest='rmdup_only', action='store_true', default=False, help="does not create a markdup file")
 	ogroup.add_argument('--debug', dest='debug', action='store_true', default=False, help=argparse.SUPPRESS)
 	#ogroup.add_argument('-l', help="log file to write statistics to (optional)")
 	ogroup.add_argument('-v','--version', action='version', version='%(prog)s '+ __version__)
@@ -1038,9 +1107,9 @@ if __name__ == '__main__':
 		parser.error("Invalid molecular tag subsequence: The start position {0} counting from the end is less than the length {1}".format(args.start, args.length))
 
 	if args.pe > 0:
-		w = PrepDeDupPairedEnd(args.sam, args.tmp_prefix, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
+		w = PrepDeDupPairedEnd(args.sam, args.tmp_prefix, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools, rmdup_only=args.rmdup_only)
 	else:
-		w = PrepDeDup(args.sam, args.tmp_prefix, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools)
+		w = PrepDeDup(args.sam, args.tmp_prefix, fq_file=args.fq, out_prefix=args.out_prefix, old_samtools=args.old_samtools, rmdup_only=args.rmdup_only)
 
 	if args.debug:
 		w.main(umi_start=args.start, umi_length=args.length)

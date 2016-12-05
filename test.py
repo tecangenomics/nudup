@@ -4,6 +4,7 @@ import os
 
 from nudup import MarkRmDups
 from nudup import PrepDeDup
+from nudup import RmdupMarkdupWriter
 
 TEST_DATA_DIR="/mnt/rddata/apatel/test_data"
 
@@ -29,6 +30,7 @@ class TestMarkRmDups(unittest.TestCase):
 	def testDupSmall(self):
 		w = MarkRmDups(out_prefix=self.out_prefix)
 		w.set_umi_length(6)
+		w.set_writer(RmdupMarkdupWriter(w.get_rmdup_path(), w.get_markdup_path()))
 
 		with open(self.preview, 'rb') as f:
 			w.mark_from_sorted_sam_with_umi_in_header(f)	
@@ -50,6 +52,8 @@ class TestMarkRmDups(unittest.TestCase):
 	def testDup(self):
 		w = MarkRmDups(out_prefix=self.out_prefix)
 		w.set_umi_length(6)
+		w.set_writer(RmdupMarkdupWriter(w.get_rmdup_path(), w.get_markdup_path()))
+
 
 		try:
 			os.remove(self.out_prefix + w._out_mark_suffix)
@@ -101,9 +105,9 @@ def test_all():
 
 def test():
 	suite = unittest.TestSuite()
-	suite.addTest(TestMarkRmDups('testOldSamtoolsDupUnsortedSamIndexInReadTitle'))
+	#suite.addTest(TestMarkRmDups('testOldSamtoolsDupUnsortedSamIndexInReadTitle'))
 	#suite.addTest(TestMarkRmDups('testDupUnsortedSamIndexInReadTitle'))
-	#suite.addTest(TestMarkRmDups('testDupSmall'))
+	suite.addTest(TestMarkRmDups('testDupSmall'))
 	#suite.addTest(TestMarkRmDups('testDupSyncedBamFastq'))
 	unittest.TextTestRunner(verbosity=2).run(suite)
 
