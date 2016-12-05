@@ -1081,7 +1081,7 @@ if __name__ == '__main__':
 	ogroup.add_argument('-l','--length', dest='length', type=int, default=6, help="length of molecular tag sequence (default = 6)")
 	ogroup.add_argument('-T', dest='tmp_prefix', metavar='TEMP_DIR', type=lambda x:tmp_dir_check(parser, x), default=default_tmp_dir, help='directory for reading and writing to temporary files and named pipes (default: {0})'.format(default_tmp_dir))
 	ogroup.add_argument('--old-samtools', dest='old_samtools', action='store_true', default=False, help="required for compatibility with samtools sort style in samtools versions <=0.1.19")
-	ogroup.add_argument('--rmdup-only', dest='rmdup_only', action='store_true', default=False, help="does not create a markdup file")
+	ogroup.add_argument('--rmdup-only', dest='rmdup_only', action='store_true', default=False, help="required for only outputting duplicates removed file")
 	ogroup.add_argument('--debug', dest='debug', action='store_true', default=False, help=argparse.SUPPRESS)
 	#ogroup.add_argument('-l', help="log file to write statistics to (optional)")
 	ogroup.add_argument('-v','--version', action='version', version='%(prog)s '+ __version__)
