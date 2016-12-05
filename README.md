@@ -76,7 +76,7 @@ Options:
                         and named pipes (default: /tmp)
   --old-samtools        required for compatibility with samtools sort style in
                         samtools versions <=0.1.19
-  --rmdup-only          does not create a markdup file
+  --rmdup-only          required for only outputting duplicates removed file
   -v, --version         show program's version number and exit
   -h, --help            show this help message and exit
 ```
