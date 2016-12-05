@@ -105,13 +105,13 @@ def test_all():
 
 def test():
 	suite = unittest.TestSuite()
-	#suite.addTest(TestMarkRmDups('testOldSamtoolsDupUnsortedSamIndexInReadTitle'))
+	suite.addTest(TestMarkRmDups('testOldSamtoolsDupUnsortedSamIndexInReadTitle'))
 	#suite.addTest(TestMarkRmDups('testDupUnsortedSamIndexInReadTitle'))
-	suite.addTest(TestMarkRmDups('testDupSmall'))
+	#suite.addTest(TestMarkRmDups('testDupSmall'))
 	#suite.addTest(TestMarkRmDups('testDupSyncedBamFastq'))
 	unittest.TextTestRunner(verbosity=2).run(suite)
 
 
 if __name__=='__main__':
-	test_all() 
-	#test()
+	#test_all() 
+	test()
