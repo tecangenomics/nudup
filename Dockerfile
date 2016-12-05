@@ -34,27 +34,25 @@ RUN cd /opt;\
 	rm ../zlib-1.2.8.tar.gz
 
 # Installs samtools 1.3
-#RUN cd /opt;\
-#	wget https://github.com/samtools/samtools/releases/download/1.3/samtools-1.3.tar.bz2;\
-#	tar xjvf samtools-1.3.tar.bz2;\
-#	cd samtools-1.3;\
-#	./configure --enable-plugins --without-curses --prefix /usr;\
-#	make all all-htslib;\
-#	make install install-htslib;\
-#	rm ../samtools-1.3.tar.bz2
-
-
-# Installs samtools 1.2
 RUN cd /opt;\
-	wget https://github.com/samtools/samtools/releases/download/1.2/samtools-1.2.tar.bz2;\
-	tar xjvf samtools-1.2.tar.bz2;\
-	cd samtools-1.2;\
+	wget https://github.com/samtools/samtools/releases/download/1.3/samtools-1.3.tar.bz2;\
+	tar xjvf samtools-1.3.tar.bz2;\
+	cd samtools-1.3;\
 	./configure --enable-plugins --without-curses --prefix /usr;\
 	make all all-htslib;\
 	make install install-htslib;\
-	rm ../samtools-1.2.tar.bz2
+	rm ../samtools-1.3.tar.bz2
 
 
+# Installs samtools 1.2
+#RUN cd /opt;\
+#	wget https://github.com/samtools/samtools/releases/download/1.2/samtools-1.2.tar.bz2;\
+#	tar xjvf samtools-1.2.tar.bz2;\
+#	cd samtools-1.2;\
+#	./configure --enable-plugins --without-curses --prefix /usr;\
+#	make all all-htslib;\
+#	make install install-htslib;\
+#	rm ../samtools-1.2.tar.bz2
 
 # Installs samtools 0.1.19
 #RUN cd /opt;\

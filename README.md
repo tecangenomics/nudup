@@ -3,7 +3,7 @@
 
 System Requirements
 -----------------------------
-- samtools-0.1.18 or 0.1.19 required [samtools page](https://sourceforge.net/projects/samtools/files/samtools/0.1.18/) Tested on 0.1.18
+- samtools required [samtools page](https://github.com/samtools/samtools/releases/) Tested on 0.1.19, 1.2.0, 1.3.0
 - python2.7 [anaconda page](http://continuum.io/downloads) Tested on 2.7.7 
 - GNU-coreutils gzip,sed,cut,grep etc. Standard on Ubuntu 12.04+.
 
@@ -72,6 +72,11 @@ Options:
                         from the 3' END of the read. (default = 6)
   -l LENGTH, --length LENGTH
                         length of molecular tag sequence (default = 6)
+  -T TEMP_DIR           directory for reading and writing to temporary files
+                        and named pipes (default: /tmp)
+  --old-samtools        required for compatibility with samtools sort style in
+                        samtools versions <=0.1.19
+  --rmdup-only          does not create a markdup file
   -v, --version         show program's version number and exit
   -h, --help            show this help message and exit
 ```
