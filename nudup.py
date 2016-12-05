@@ -1002,7 +1002,8 @@ class PrepDeDup(object):
 		else:
 			w = self.process_unsynced_sam(umi_start, umi_length)	
 		self._log_output(w)
-		logger.info('Created output file {0} with duplicates marked'.format(w.get_markdup_path()))	
+		if not self._rmdup_only:
+			logger.info('Created output file {0} with duplicates marked'.format(w.get_markdup_path()))	
 		logger.info('Created output file {0} with duplicates removed'.format(w.get_rmdup_path()))	
 		return w
 
@@ -1015,16 +1016,6 @@ class PrepDeDupPairedEnd(PrepDeDup):
 
 		self.DupMain = MarkRmDupsPairedEnd
 		self.type_str = 'paired'
-#	def main(self,umi_start=None,umi_length=None):
-#		logger.info('Deduplicating NuGEN Ovation Target Enrichment  end reads...')
-#		if self._index is None:
-#			w = self.process_sorted_sam_with_umi_in_rname(umi_length)
-#		else:
-#			w = self.process_unsynced_sam(umi_start, umi_length)	
-#		self._log_output(w)
-#		logger.info('Created output file {0} with duplicates marked'.format(w._writer.markdup_path))	
-#		logger.info('Created output file {0} with duplicates removed'.format(w._writer.rmdup_path))	
-#		return w
 
 def from_sorted_bam(bam_fpath, out_prefix, umi_length=6):
 	w = MarkRmDups(out_prefix)
