@@ -4,6 +4,7 @@ import os
 
 from nudup import MarkRmDups
 from nudup import PrepDeDup
+from nudup import RmdupMarkdupWriter
 
 TEST_DATA_DIR="/mnt/rddata/apatel/test_data"
 
@@ -20,6 +21,7 @@ class TestMarkRmDups(unittest.TestCase):
 		self.read = os.path.join(TEST_DATA_DIR, 'dedup', 'input', 'R1_space_hash.fastq')
 		self.index_gz = os.path.join(TEST_DATA_DIR, 'dedup', 'input', 'bI1.fastq.gz')
 
+		self.tmp_prefix = '/tmp/nudup_'
 		self.out_prefix = os.path.join(TEST_DATA_DIR, 'dedup','output', 'multx')
 		self.preview = os.path.join(TEST_DATA_DIR, 'dedup','input', 'h200_multx_umi_sorted.sam')
 		
@@ -28,6 +30,7 @@ class TestMarkRmDups(unittest.TestCase):
 	def testDupSmall(self):
 		w = MarkRmDups(out_prefix=self.out_prefix)
 		w.set_umi_length(6)
+		w.set_writer(RmdupMarkdupWriter(w.get_rmdup_path(), w.get_markdup_path()))
 
 		with open(self.preview, 'rb') as f:
 			w.mark_from_sorted_sam_with_umi_in_header(f)	
@@ -49,6 +52,8 @@ class TestMarkRmDups(unittest.TestCase):
 	def testDup(self):
 		w = MarkRmDups(out_prefix=self.out_prefix)
 		w.set_umi_length(6)
+		w.set_writer(RmdupMarkdupWriter(w.get_rmdup_path(), w.get_markdup_path()))
+
 
 		try:
 			os.remove(self.out_prefix + w._out_mark_suffix)
@@ -69,19 +74,25 @@ class TestMarkRmDups(unittest.TestCase):
 		raise NotImplementedError()
 
 	def testDupUnsortedSamFastqGz(self):
-		d = PrepDeDup(self.sam_sorted, fq_file=self.index_gz, out_prefix=self.out_prefix)
+		d = PrepDeDup(self.sam_sorted, self.tmp_prefix, fq_file=self.index_gz, out_prefix=self.out_prefix)
 		w = d.main(umi_start=6, umi_length=6)
 		self._check_for_multx(w)
 
 
 	def testDupUnsortedSam(self):
-		d = PrepDeDup(self.sam_sorted, fq_file=self.index, out_prefix=self.out_prefix)
+		d = PrepDeDup(self.sam_sorted, self.tmp_prefix, fq_file=self.index, out_prefix=self.out_prefix)
 
 		w = d.main(umi_start=6, umi_length=6)
 		self._check_for_multx(w)
 	
 	def testDupUnsortedSamIndexInReadTitle(self):
-		d = PrepDeDup(self.sam_sorted, fq_file=self.read, out_prefix=self.out_prefix)
+		d = PrepDeDup(self.sam_sorted, self.tmp_prefix, fq_file=self.read, out_prefix=self.out_prefix)
+
+		w = d.main(umi_start=6, umi_length=6)
+		self._check_for_multx(w)
+
+	def testOldSamtoolsDupUnsortedSamIndexInReadTitle(self):
+		d = PrepDeDup(self.sam_sorted, self.tmp_prefix, fq_file=self.read, out_prefix=self.out_prefix, old_samtools=True)
 
 		w = d.main(umi_start=6, umi_length=6)
 		self._check_for_multx(w)
@@ -94,12 +105,13 @@ def test_all():
 
 def test():
 	suite = unittest.TestSuite()
-	suite.addTest(TestMarkRmDups('testDupUnsortedSamIndexInReadTitle'))
+	suite.addTest(TestMarkRmDups('testOldSamtoolsDupUnsortedSamIndexInReadTitle'))
+	#suite.addTest(TestMarkRmDups('testDupUnsortedSamIndexInReadTitle'))
 	#suite.addTest(TestMarkRmDups('testDupSmall'))
 	#suite.addTest(TestMarkRmDups('testDupSyncedBamFastq'))
 	unittest.TextTestRunner(verbosity=2).run(suite)
 
 
 if __name__=='__main__':
-	test_all() 
-	#test()
+	#test_all() 
+	test()
