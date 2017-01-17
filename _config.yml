@@ -1,1 +1,8 @@
+title: Nudup
+description: NuDup -- Marks/removes duplicate molecules based on the molecular tagging technology used in NuGEN products.
+google_analytics:
+show_downloads: true
 theme: jekyll-theme-minimal
+
+gems:
+  - jekyll-mentions
