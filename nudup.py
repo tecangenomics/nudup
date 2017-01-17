@@ -1011,8 +1011,8 @@ class PrepDeDupPairedEnd(PrepDeDup):
 	""" Treats Input SAM as containing Paired End data, and marks/removes potential PCR duplicate
 	  templates
 	"""
-	def __init__(self, sam_file, tmp_prefix, fq_file=None, out_prefix='', old_samtools=False):
-		PrepDeDup.__init__(self, sam_file, tmp_prefix, fq_file, out_prefix, old_samtools)
+	def __init__(self, sam_file, tmp_prefix, fq_file=None, out_prefix='', old_samtools=False, rmdup_only=False):
+		PrepDeDup.__init__(self, sam_file, tmp_prefix, fq_file, out_prefix, old_samtools, rmdup_only)
 
 		self.DupMain = MarkRmDupsPairedEnd
 		self.type_str = 'paired'
