@@ -1047,20 +1047,21 @@ def file_check(parser, arg):
 		return str(arg)
 
 def tmp_dir_check(parser, arg):
-	if not os.path.isdir(arg):
-		parser.error("The argument {0} is not a directory!".format(arg))
+	temp_dir = os.path.abspath(arg)
+	if not os.path.isdir(temp_dir):
+		parser.error("The argument {0} is not a directory!".format(temp_dir))
 
-	check_fpath = os.path.join(arg, 'named_pipe')
+	check_fpath = os.path.join(temp_dir, 'named_pipe')
 	try:
 		os.mkfifo(check_fpath)
 	except OSError:
 		parser.error("Must be able to make named pipes in temp directory. See `man mkfifo` for named pipe info.") 
-		
+
 	finally:
 		if os.path.exists(check_fpath):
 			os.unlink(check_fpath)
 
-	return os.path.join(str(arg), 'nudup_')
+	return os.path.join(str(temp_dir), 'nudup_')
 	
 
 
