@@ -39,7 +39,7 @@ Here are the two cases for running this tool:
  2) FASTQ file (ie: the Index FASTQ) that contains the molecular tag sequence
     for each read name in the corresponding SAM/BAM file as either a) the read
     sequence or b) in the FASTQ entry header name. If the index FASTQ read
-    length is 6, 8, 12, 14, or 18nt long as expected for NuGEN products, the
+    length is 6, 8, 12, 14, or 16nt long as expected for NuGEN products, the
     molecular tag sequence to be extracted from the read according to -s and -l
     parameters, otherwise the molecular tag will be extracted from the header
     of the FASTQ entry.
