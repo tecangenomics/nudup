@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
 """Marks/removes PCR introduced duplicate molecules based on the molecular tagging
 technology used in NuGEN products.
 
