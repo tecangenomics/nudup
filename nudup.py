@@ -753,7 +753,7 @@ class IndexFinder(object):
 	def _get_read_title_cmds(self):
 		cmds = ['cat {fq}'.format(fq=self._fq.fq)]
 		if self._fq.is_compressed():
-			cmd.append("gzip -c -d")
+			cmds.append("gzip -c -d")
 
 		cmds.append('sed -n 1~4p')
 		sed_reformat = r"s/^@\([^ \t]\+\).*\([ACGTN]\{6,\}\).*/\1\t\2/"
