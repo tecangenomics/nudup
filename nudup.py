@@ -893,7 +893,7 @@ class PrepDeDup(object):
 				raise Exception('Index is not unique failed')
 
 			# Checks if each RNAME in SAM is in the FQ
-			uniq_to_sam_cmd = "join -t '	' -j 1 -v 2 {fq} {sam}".format(fq=fq_path.name, sam=sam_path.name)
+			uniq_to_sam_cmd = "join -t $'\t' -j 1 -v 2 {fq} {sam}".format(fq=fq_path.name, sam=sam_path.name)
 			logger.debug(uniq_to_sam_cmd)
 			sam_uniq_out = sp.check_output(shlex.split(uniq_to_sam_cmd))	
 			if len(sam_uniq_out.strip())>0:
@@ -933,7 +933,7 @@ class PrepDeDup(object):
 							raise Exception('Could not find head of SAM file. ')
 
 						# Add SAM file with UMI in header
-						join_cmd = "join -t '	' -j 1 {fq} {sam}".format(fq=fq_path.name, sam=sam_path.name)
+						join_cmd = "join -t $'\t' -j 1 {fq} {sam}".format(fq=fq_path.name, sam=sam_path.name)
 						add_umi_cmd = r"sed -e 's/^\([^\t]\+\)\t\([^\t]\+\)/\1:\2/'"	
 						with SubprocessChain([join_cmd, add_umi_cmd], umi_join_path) as umi_nohead_sam:
 							logger.debug('Add molecular tag sequence to sam: %s', umi_nohead_sam)
