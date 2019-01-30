@@ -8,7 +8,7 @@ System Requirements
 - samtools required [samtools page](https://github.com/samtools/samtools/releases/) Tested on 0.1.19, 1.2.0, 1.3.0
 - python2.7 [anaconda page](http://continuum.io/downloads) Tested on 2.7.7 
 - GNU-coreutils gzip,sed,cut,grep etc. Standard on Ubuntu 12.04+.
-- Aligner: STAR or BWA. (Tophat and Tophat 2 do not set SAM flags used by NuDUP and is not supported.) If a spliced aligner is not required, bowtie/bowtie2 are compatibile with `nudup`.
+- Aligner: STAR or BWA. (Tophat and Tophat 2 do not set SAM flags used by NuDUP and is not supported.) If a spliced aligner is not required, bowtie/bowtie2 are compatibile with nudup.
 
 Usage
 -----------------------------
