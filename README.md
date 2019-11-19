@@ -1,5 +1,5 @@
-![](http://nugendata.com/images/nugen_logo_noedge.png)  
-[www.nugen.com](http://www.nugen.com)
+![](https://lifesciences.tecan.com/hubfs/page_images/logo.png)  
+[www.tecangenomics.com](http://www.tecangenomics.com)
 
 [![bioconda-badge](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat-square)](http://bioconda.github.io)
 
@@ -20,7 +20,7 @@ usage: nudup.py [-2] [-f INDEX.fq|READ.fq] [-o OUT_PREFIX] [-s START]
                 IN.sam|IN.bam
 
 Marks/removes PCR introduced duplicate molecules based on the molecular tagging
-technology used in NuGEN products.
+technology used in Tecan products.
 
 For SINGLE END reads, duplicates are marked if they fulfill the following
 criteria: a) start at the same genomic coordinate b) have the same strand
@@ -40,7 +40,7 @@ Here are the two cases for running this tool:
  2) FASTQ file (ie: the Index FASTQ) that contains the molecular tag sequence
     for each read name in the corresponding SAM/BAM file as either a) the read
     sequence or b) in the FASTQ entry header name. If the index FASTQ read
-    length is 6, 8, 12, 14, or 16nt long as expected for NuGEN products, the
+    length is 6, 8, 12, 14, or 16nt long as expected for Tecan products, the
     molecular tag sequence to be extracted from the read according to -s and -l
     parameters, otherwise the molecular tag will be extracted from the header
     of the FASTQ entry.
@@ -51,7 +51,7 @@ Here are the two cases for running this tool:
     molecular tag appended to each read name.
 
 Author: Anand Patel
-Contact: NuGEN Technologies Inc., techserv@nugen.com
+Contact: Tecan NGS Technical Support techserv-gn@tecan.com
 
 Input:
   IN.sam|IN.bam         input sorted/unsorted SAM/BAM containing only unique
@@ -86,4 +86,4 @@ Options:
 
 Support
 -----------------------------  
-For questions, contact NuGEN Technologies Technical Support techserv@nugen.com
+For questions, contact Tecan NGS Technical Support techserv-gn@tecan.com
